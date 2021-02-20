@@ -107,9 +107,11 @@ from distiller.quantization.range_linear import PostTrainLinearQuantizer
 
 # pylint: enable=no-name-in-module
 import ai8x
+import ai8x_ofa
 import datasets
 import nnplot
 import parse_qat_yaml
+import parse_ofa_yaml
 import parsecmd
 import sample
 
@@ -291,6 +293,10 @@ def main():
     qat_policy = parse_qat_yaml.parse(args.qat_policy) \
         if args.qat_policy.lower() != "none" else None
 
+    # Get policy for once for all training policy
+    ofa_policy = parse_ofa_yaml.parse(args.ofa_policy) \
+        if args.ofa_policy.lower() != "none" else None
+
     # We can optionally resume from a checkpoint
     optimizer = None
     if args.resumed_checkpoint_path:
@@ -429,6 +435,12 @@ def main():
                         'to %d', start_epoch, ending_epoch)
         raise ValueError('Epochs parameter is too low. Nothing to do.')
 
+    if args.ofa:
+        assert isinstance(model, ai8x_ofa.OnceForAllModel), 'Model should implement ' \
+                                        'OnceForAllModel interface for OFA training!'
+        if ofa_policy:
+            args.ofa_stage_transition_list = create_ofa_training_stage_list(model, ofa_policy)
+
     vloss = 10**6
     for epoch in range(start_epoch, ending_epoch):
         if qat_policy is not None and epoch > 0 and epoch == qat_policy['start_epoch']:
@@ -457,31 +469,35 @@ def main():
                 msglogger.info(distiller.masks_sparsity_tbl_summary(model, compression_scheduler))
 
         # evaluate on validation set
-        with collectors_context(activations_collectors["valid"]) as collectors:
-            top1, top5, vloss = validate(val_loader, model, criterion, [pylogger], args, epoch,
-                                         tflogger)
-            distiller.log_activation_statistics(epoch, "valid", loggers=all_tbloggers,
-                                                collector=collectors["sparsity"])
-            save_collectors_data(collectors, msglogger.logdir)
+        if not args.ofa or (args.ofa and (epoch < ofa_policy['start_epoch'])) or \
+           (args.ofa and ((epoch+1) % ofa_policy['validation_freq'] == 0)):
+            with collectors_context(activations_collectors["valid"]) as collectors:
+                if args.ofa and (epoch >= ofa_policy['start_epoch']):
+                    update_bn_stats(train_loader, model, args)
 
-        if not args.regression:
-            stats = ('Performance/Validation/',
-                     OrderedDict([('Loss', vloss),
-                                  ('Top1', top1)]))
-            if args.num_classes > 5:
-                stats[1]['Top5'] = top5
-        else:
-            stats = ('Performance/Validation/',
-                     OrderedDict([('Loss', vloss),
-                                  ('MSE', top1)]))
+                top1, top5, vloss = validate(val_loader, model, criterion, [pylogger], args, epoch,
+                                             tflogger)
+                distiller.log_activation_statistics(epoch, "valid", loggers=all_tbloggers,
+                                                    collector=collectors["sparsity"])
+                save_collectors_data(collectors, msglogger.logdir)
+
+            if not args.regression:
+                stats = ('Performance/Validation/', OrderedDict([('Loss', vloss), ('Top1', top1)]))
+                if args.num_classes > 5:
+                    stats[1]['Top5'] = top5
+            else:
+                stats = ('Performance/Validation/', OrderedDict([('Loss', vloss), ('MSE', top1)]))
+
         distiller.log_training_progress(stats, None, epoch, steps_completed=0, total_steps=1,
                                         log_freq=1, loggers=all_tbloggers)
+
+        # Update the list of top scores achieved so far
+        update_training_scores_history(perf_scores_history, model, top1, top5, epoch, args)
 
         if compression_scheduler:
             compression_scheduler.on_epoch_end(epoch, optimizer)
 
-        # Update the list of top scores achieved so far, and save the checkpoint
-        update_training_scores_history(perf_scores_history, model, top1, top5, epoch, args)
+        # Save the checkpoint
         is_best = epoch == perf_scores_history[0].epoch
         checkpoint_extras = {'current_top1': top1,
                              'best_top1': perf_scores_history[0].top1,
@@ -489,6 +505,17 @@ def main():
         apputils.save_checkpoint(epoch, args.cnn, model, optimizer=optimizer,
                                  scheduler=compression_scheduler, extras=checkpoint_extras,
                                  is_best=is_best, name=args.name, dir=msglogger.logdir)
+        if (args.ofa and (epoch >= ofa_policy['start_epoch']) and \
+           ((epoch+1) % ofa_policy['validation_freq'] == 0)):
+            stage, level = get_ofa_training_stage(epoch, args.ofa_stage_transition_list)
+            if args.name:
+                ofa_checkpoint_name = f'{args.name}_ofa_stg{stage}_lev{level}'
+            else:
+                ofa_checkpoint_name = f'ofa_stg{stage}_lev{level}'
+            apputils.save_checkpoint(epoch, args.cnn, model, optimizer=optimizer,
+                                     scheduler=compression_scheduler, extras=checkpoint_extras,
+                                     is_best=is_best, name=ofa_checkpoint_name,
+                                     dir=msglogger.logdir)
 
     # Finally run results on the test set
     test(test_loader, model, criterion, [pylogger], activations_collectors, args=args)
@@ -586,6 +613,13 @@ def train(train_loader, model, criterion, optimizer, epoch,
     steps_per_epoch = (total_samples + batch_size - 1) // batch_size
     msglogger.info('Training epoch: %d samples (%d per mini-batch)', total_samples, batch_size)
 
+    if args.ofa:
+        if args.ofa_stage_transition_list is not None:
+            stage, level = get_ofa_training_stage(epoch, args.ofa_stage_transition_list)
+        else:
+            stage = 0
+            level = 0
+
     # Switch to train mode
     model.train()
     acc_stats = []
@@ -594,6 +628,15 @@ def train(train_loader, model, criterion, optimizer, epoch,
         # Measure data loading time
         data_time.add(time.time() - end)
         inputs, target = inputs.to(args.device), target.to(args.device)
+
+        # Set OFA parameters if necessary
+        if args.ofa:
+            if stage == 1:
+                ai8x_ofa.sample_subnet_kernel(model, level)
+            elif stage == 2:
+                ai8x_ofa.sample_subnet_depth(model, level)
+            elif stage == 3:
+                ai8x_ofa.sample_subnet_width(model, level)
 
         # Execute the forward phase, compute the output and measure loss
         if compression_scheduler:
@@ -645,6 +688,15 @@ def train(train_loader, model, criterion, optimizer, epoch,
         if compression_scheduler:
             compression_scheduler.on_minibatch_end(epoch, train_step, steps_per_epoch, optimizer)
 
+         # Reset OFA sampling wrt OFA stage if necessary
+        if args.ofa:
+            if stage == 1:
+                ai8x_ofa.reset_kernel_sampling(model)
+            elif stage == 2:
+                ai8x_ofa.reset_depth_sampling(model)
+            elif stage == 3:
+                ai8x_ofa.reset_width_sampling(model)
+
         # measure elapsed time
         batch_time.add(time.time() - end)
         steps_completed = (train_step+1)
@@ -673,6 +725,10 @@ def train(train_loader, model, criterion, optimizer, epoch,
             for loss_name, meter in losses.items():
                 stats_dict[loss_name] = meter.mean
             stats_dict.update(errs)
+            if args.ofa:
+                stats_dict['OFA-Stage'] = stage
+                if stage != 0:
+                    stats_dict['OFA-Level'] = level
             stats_dict['LR'] = optimizer.param_groups[0]['lr']
             stats_dict['Time'] = batch_time.mean
             stats = ('Performance/Training/', stats_dict)
@@ -685,6 +741,14 @@ def train(train_loader, model, criterion, optimizer, epoch,
                                             loggers)
         end = time.time()
     return acc_stats
+
+
+def update_bn_stats(train_loader, model, args):
+    """Routine to update BatchNorm statistics"""
+    model.train()
+    for (inputs, target) in train_loader:
+        inputs, target = inputs.to(args.device), target.to(args.device)
+        _ = model(inputs)
 
 
 def validate(val_loader, model, criterion, loggers, args, epoch=-1, tflogger=None):
@@ -1235,6 +1299,54 @@ def greedy(model, criterion, _optimizer, loggers, args):
                                                           args.greedy_pruning_step,
                                                           test_fn, train_fn)
 
+
+def create_ofa_training_stage_list(model, ofa_policy):
+    """Create list to define OFA stage transition epochs"""
+    stage_transition_list = []
+    print(ofa_policy)
+
+    stage_transition_list.append((ofa_policy['start_epoch'], 0, 0))
+
+    max_kernel_level = model.get_max_elastic_kernel_level()
+    if ofa_policy['elastic_kernel']['leveling']:
+        for level in range(max_kernel_level+1):
+            stage_transition_list.append((stage_transition_list[-1][0] + \
+                                          ofa_policy['elastic_kernel']['num_epochs'], 1, level))
+    else:
+        stage_transition_list.append((stage_transition_list[-1][0] + \
+                                      ofa_policy['elastic_kernel']['num_epochs'], 1,
+                                      max_kernel_level))
+
+    max_depth_level = model.get_max_elastic_depth_level()
+    if ofa_policy['elastic_depth']['leveling']:
+        for level in range(max_depth_level+1):
+            stage_transition_list.append((stage_transition_list[-1][0] + \
+                                          ofa_policy['elastic_depth']['num_epochs'], 2, level))
+    else:
+        stage_transition_list.append((stage_transition_list[-1][0] + \
+                                      ofa_policy['elastic_depth']['num_epochs'], 2,
+                                      max_depth_level))
+
+    max_width_level = model.get_max_elastic_width_level()
+    if ofa_policy['elastic_width']['leveling']:
+        for level in range(max_width_level+1):
+            stage_transition_list.append((stage_transition_list[-1][0] + \
+                                          ofa_policy['elastic_width']['num_epochs'], 3, level))
+    else:
+        stage_transition_list.append((stage_transition_list[-1][0] + \
+                                      ofa_policy['elastic_width']['num_epochs'], 3,
+                                      max_width_level))
+
+    return stage_transition_list
+
+
+def get_ofa_training_stage(epoch, stage_transition_list):
+    """Returns current stage of OFA"""
+    for t in stage_transition_list:
+        if epoch < t[0]:
+            break
+
+    return t[1], t[2] # pylint: disable=undefined-loop-variable
 
 class missingdict(dict):
     """This is a little trick to prevent KeyError"""

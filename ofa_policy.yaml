@@ -1,0 +1,11 @@
+start_epoch: 200
+validation_freq: 250
+elastic_kernel:
+  leveling: False
+  num_epochs: 2000
+elastic_depth:
+  leveling: True
+  num_epochs: 1500
+elastic_width:
+  leveling: True
+  num_epochs: 2000
