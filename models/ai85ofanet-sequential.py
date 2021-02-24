@@ -10,14 +10,15 @@
 Sequential Once For All network for AI85.
 """
 import random
+import copy
 
 import torch
 import torch.nn as nn
 
 import ai8x
-from ai8x_ofa import FusedConv2dReLU, FusedConv2dBNReLU, FusedMaxPoolConv2dReLU, \
-                     FusedMaxPoolConv2dBNReLU, FusedConv1dReLU, FusedConv1dBNReLU, \
-                     FusedMaxPoolConv1dReLU, FusedMaxPoolConv1dBNReLU
+from ai8x_ofa import (FusedConv1dBNReLU, FusedConv1dReLU, FusedConv2dBNReLU, FusedConv2dReLU,
+                      FusedMaxPoolConv1dBNReLU, FusedMaxPoolConv1dReLU, FusedMaxPoolConv2dBNReLU,
+                      FusedMaxPoolConv2dReLU)
 
 
 class OnceForAllSequentialUnit(nn.Module):
@@ -64,7 +65,8 @@ class OnceForAllSequentialUnit(nn.Module):
 
     def reset_depth_sampling(self):
         """Resets depth to maximum depth"""
-        self.depth = len(self.layers)
+        with torch.no_grad():
+            self.depth = len(self.layers)
 
     def forward(self, x):
         """Forward prop"""
@@ -106,6 +108,17 @@ class OnceForAllSequentialModel(nn.Module):
     def __init__(self, num_classes, num_channels, dimensions, bias, n_units, depth_list,
                  width_list, kernel_list, bn, unit, **kwargs):
         super().__init__()
+
+        self.num_classes = num_classes
+        self.num_channels = num_channels
+        self.dimensions = dimensions
+        self.bias = bias
+        self.n_units = n_units
+        self.depth_list = depth_list
+        self.width_list = width_list
+        self.kernel_list = kernel_list
+        self.bn = bn
+        self.unit = unit
 
         self.units = nn.ModuleList([])
         dim1 = dimensions[0]
@@ -162,33 +175,36 @@ class OnceForAllSequentialModel(nn.Module):
 
     def sample_subnet_width(self, level=0):
         """OFA Elastic width search strategy"""
-        max_unit_ind = len(self.units) - 1
-        for u_ind, unit in enumerate(self.units):
-            max_layer_ind = unit.depth - 1
-            for l_ind in range(unit.depth):
-                layer = unit.layers[l_ind]
-                if not(u_ind == 0 and l_ind == 0):
-                    layer.set_channels(in_channels=last_out_ch)
+        with torch.no_grad():
+            max_unit_ind = len(self.units) - 1
+            for u_ind, unit in enumerate(self.units):
+                max_layer_ind = unit.depth - 1
+                for l_ind in range(unit.depth):
+                    layer = unit.layers[l_ind]
+                    if not(u_ind == 0 and l_ind == 0):
+                        layer.set_channels(in_channels=last_out_ch)
 
-                if (u_ind == max_unit_ind) and (l_ind == max_layer_ind):
-                    layer.set_channels(out_channels=self.units[-1].layers[-1].out_channels)
-                else:
-                    pos_width_list = [layer.op.out_channels]
-                    for l in range(level):
-                        pos_width_list.append(int((1.0 - (l+1)*0.25) * layer.op.out_channels))
+                    if (u_ind == max_unit_ind) and (l_ind == max_layer_ind):
+                        layer.set_channels(out_channels=self.units[-1].layers[-1].out_channels)
+                    else:
+                        pos_width_list = [layer.op.out_channels]
+                        for l in range(level):
+                            pos_width_list.append(int((1.0 - (l+1)*0.25) * layer.op.out_channels))
 
-                    random_width = random.choice(pos_width_list)
-                    layer.set_channels(out_channels=random_width)
-                    last_out_ch = layer.out_channels
+                        random_width = random.choice(pos_width_list)
+                        layer.set_channels(out_channels=random_width)
+                        last_out_ch = layer.out_channels
 
         self.sort_channels()
 
     def reset_width_sampling(self):
         """Resets widths to maximum widths"""
-        for unit in self.units:
-            for layer in unit.layers:
-                layer.set_channels(in_channels=layer.op.in_channels,
-                                   out_channels=layer.op.out_channels)
+        with torch.no_grad():
+            for unit in self.units:
+                for layer in unit.layers:
+                    layer.set_channels(in_channels=layer.op.in_channels,
+                                       out_channels=layer.op.out_channels)
+            self.sort_channels()
 
     def sort_channels(self):
         """Sorts channels wrt output channel kernels importance"""
@@ -212,6 +228,215 @@ class OnceForAllSequentialModel(nn.Module):
                             next_layer = self.units[u_ind+1].layers[0]
 
                         next_layer.set_in_ch_order(layer.out_ch_order, reset_order=True)
+
+    def get_base_arch(self):
+        """Returns architecture of the full model"""
+        arch = {'num_classes': self.num_classes, 'num_channels': self.num_channels,
+                'dimensions': self.dimensions, 'bias': self.bias, 'n_units': self.n_units,
+                'bn': self.bn, 'unit': self.unit, 'depth_list': [], 'width_list': [],
+                'kernel_list': []}
+
+        for unit in self.units:
+            arch['depth_list'].append(len(unit.layers))
+            width_list = []
+            kernel_list = []
+            for layer in unit.layers:
+                width_list.append(layer.op.weight.shape[0])
+                kernel_list.append(layer.op.weight.shape[2])
+            arch['width_list'].append(width_list)
+            arch['kernel_list'].append(kernel_list)
+
+        return arch
+
+    def get_subnet_arch(self):
+        """Returns architecture of the sampled model"""
+        arch = {'num_classes': self.num_classes, 'num_channels': self.num_channels,
+                'dimensions': self.dimensions, 'bias': self.bias, 'n_units': self.n_units,
+                'bn': self.bn, 'unit': self.unit, 'depth_list': [], 'width_list': [],
+                'kernel_list': []}
+
+        for unit in self.units:
+            arch['depth_list'].append(unit.depth)
+            width_list = []
+            kernel_list = []
+            for l_ind in range(unit.depth):
+                width_list.append(unit.layers[l_ind].out_channels)
+                kernel_list.append(unit.layers[l_ind].kernel_size)
+            arch['width_list'].append(width_list)
+            arch['kernel_list'].append(kernel_list)
+
+        return arch
+
+    def set_subnet_arch(self, arch, sort_channels=False):
+        """Sets given architecture as the sampled subnet"""
+        assert arch['num_classes'] == self.num_classes
+        assert arch['num_channels'] == self.num_channels
+        assert arch['dimensions'] == self.dimensions
+        assert arch['bias'] == self.bias
+        assert arch['n_units'] == self.n_units
+        assert arch['bn'] == self.bn
+        assert arch['unit'] == self.unit
+
+        for u_ind, unit in enumerate(self.units):
+            unit.depth = arch['depth_list'][u_ind]
+            for l_ind in range(unit.depth):
+                unit.layers[l_ind].out_channels = arch['width_list'][u_ind][l_ind]
+                unit.layers[l_ind].kernel_size = arch['kernel_list'][u_ind][l_ind]
+                if l_ind == (unit.depth-1):
+                    if u_ind != (self.n_units-1):
+                        self.units[u_ind+1].layers[0].in_channels = \
+                            arch['width_list'][u_ind][l_ind]
+                else:
+                    self.units[u_ind].layers[l_ind+1].in_channels = \
+                            arch['width_list'][u_ind][l_ind]
+
+        if sort_channels:
+            self.sort_channels()
+
+    def reset_arch(self, sort_channels=False):
+        """Resets architecture to the full model"""
+        for unit in self.units:
+            unit.depth = len(unit.layers)
+            for layer in unit.layers:
+                layer.out_channels = layer.op.weight.shape[0]
+                layer.in_channels = layer.op.weight.shape[1]
+                layer.kernel_size = layer.max_kernel_size.detach().cpu().item()
+
+        if sort_channels:
+            self.sort_channels()
+
+    @staticmethod
+    def get_num_weights(model_arch):
+        """Returns number of weights in the given arch"""
+        num_params = 0
+        dim1 = model_arch['dimensions'][0]
+        dim2 = model_arch['dimensions'][1] if len(model_arch['dimensions']) == 2 else 1
+        for u_ind, depth in enumerate(model_arch['depth_list']):
+            if u_ind != 0:
+                dim1 = dim1 // 2
+                dim2 = (dim2 // 2) if len(model_arch['dimensions']) == 2 else 1
+            for l_ind in range(depth):
+                if l_ind != 0:
+                    prev_layer_width = model_arch['width_list'][u_ind][l_ind-1]
+                else:
+                    if u_ind == 0:
+                        prev_layer_width = model_arch['num_channels']
+                    else:
+                        prev_layer_width = model_arch['width_list'][u_ind-1][-1]
+
+                num_layer_params = prev_layer_width * model_arch['width_list'][u_ind][l_ind] * \
+                                   model_arch['kernel_list'][u_ind][l_ind]
+                if model_arch['unit'] == OnceForAll2DSequentialModel:
+                    num_layer_params *= model_arch['kernel_list'][u_ind][l_ind]
+
+                num_params += num_layer_params
+
+        num_linear_params = dim1*dim2*model_arch['width_list'][-1][-1]*model_arch['num_classes']
+
+        return num_params+num_linear_params
+
+    @staticmethod
+    def mutate(model_arch, base_arch, prob_mutation, mutate_kernel=True, mutate_depth=True,
+               mutate_width=True):
+        """Mutates given architecture"""
+        new_model_arch = copy.deepcopy(model_arch)
+
+        depth_list = new_model_arch['depth_list']
+        width_list = new_model_arch['width_list']
+        kernel_list = new_model_arch['kernel_list']
+
+        #mutate model depth
+        if mutate_depth:
+            for unit_idx in range(new_model_arch['n_units']):
+                if random.random() < prob_mutation:
+                    min_depth = 1
+                    max_depth = base_arch['depth_list'][unit_idx]
+                    depth = random.randint(min_depth, max_depth)
+                    if depth <= depth_list[unit_idx]:
+                        width_list[unit_idx] = width_list[unit_idx][:depth]
+                        kernel_list[unit_idx] = kernel_list[unit_idx][:depth]
+                    else:
+                        for i in range(depth - depth_list[unit_idx]):
+                            max_kernel = base_arch['kernel_list'][unit_idx] \
+                                         [depth_list[unit_idx] + i]
+                            kernel_opts = list(range(1, max_kernel+1, 2))
+                            kernel_list[unit_idx].append(random.choice(kernel_opts))
+
+                            max_width = base_arch['width_list'][unit_idx][depth_list[unit_idx] + i]
+                            if mutate_width:
+                                width_opts = [max_width]
+                                for l in range(3):
+                                    width_opts.append(int((1.0 - (l+1)*0.25) * max_width))
+                                width_list[unit_idx].append(random.choice(width_opts))
+                            else:
+                                width_list[unit_idx].append(max_width)
+                    depth_list[unit_idx] = depth
+
+        #mutate layer parameters
+        for unit_idx, _ in enumerate(width_list):
+            for layer_idx, _ in enumerate(width_list[unit_idx]):
+                if random.random() < prob_mutation:
+                    if mutate_kernel:
+                        max_kernel = base_arch['kernel_list'][unit_idx][layer_idx]
+                        kernel_opts = list(range(1, max_kernel+1, 2))
+                        kernel_list[unit_idx][layer_idx] = random.choice(kernel_opts)
+
+                    if mutate_width:
+                        max_width = base_arch['width_list'][unit_idx][layer_idx]
+                        width_opts = [max_width]
+                        for l in range(3):
+                            width_opts.append(int((1.0 - (l+1)*0.25) * max_width))
+                        width_list[unit_idx][layer_idx] = random.choice(width_opts)
+
+        width_list[-1][-1] = base_arch['width_list'][-1][-1]
+
+        return new_model_arch
+
+    @staticmethod
+    def crossover(model1, model2):
+        """Crossovers the given architectures"""
+        assert model1['num_classes'] == model2['num_classes']
+        assert model1['num_channels'] == model2['num_channels']
+        assert model1['dimensions'] == model2['dimensions']
+        assert model1['bias'] == model2['bias']
+        assert model1['n_units'] == model2['n_units']
+        assert model1['bn'] == model2['bn']
+        assert model1['unit'] == model2['unit']
+
+        depth_list = []
+        width_list = []
+        kernel_list = []
+
+        #crossover model depths
+        for unit_idx in range(model1['n_units']):
+            depth_list.append(random.choice([model1['depth_list'][unit_idx],
+                                             model2['depth_list'][unit_idx]]))
+
+        #crossover layers
+        for unit_idx, depth in enumerate(depth_list):
+            width_list.append([])
+            kernel_list.append([])
+            for d in range(depth):
+                if d >= model1['depth_list'][unit_idx]:
+                    width_list[unit_idx].append(model2['width_list'][unit_idx][d])
+                    kernel_list[unit_idx].append(model2['kernel_list'][unit_idx][d])
+                elif d >= model2['depth_list'][unit_idx]:
+                    width_list[unit_idx].append(model1['width_list'][unit_idx][d])
+                    kernel_list[unit_idx].append(model1['kernel_list'][unit_idx][d])
+                else:
+                    width_list[unit_idx].append(random.choice([model1['width_list'][unit_idx][d],
+                                                               model2['width_list'][unit_idx][d]]))
+                    kernel_list[unit_idx].append(random.choice([model1['kernel_list'][unit_idx][d],
+                                                                model2['kernel_list'][unit_idx][d]])) # pylint: disable=line-too-long
+
+        new_model_arch = {'num_classes': model1['num_classes'],
+                          'num_channels': model1['num_channels'],
+                          'dimensions': model1['dimensions'], 'bias': model1['bias'],
+                          'n_units': model1['n_units'], 'bn': model1['bn'],
+                          'unit': model1['unit'], 'depth_list': depth_list,
+                          'width_list': width_list, 'kernel_list': kernel_list}
+
+        return new_model_arch
 
 
 class OnceForAll2DSequentialModel(OnceForAllSequentialModel):

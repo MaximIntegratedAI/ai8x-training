@@ -14,8 +14,8 @@ implementations into account.
 arXiv preprint arXiv:1908.09791 (2019).
 """
 
-import random
 import abc
+import random
 
 import torch
 import torch.nn as nn
@@ -51,7 +51,7 @@ class OnceForAllModule(nn.Module):
         if op is not None:
             self.in_channels = op.weight.shape[1]
             self.out_channels = op.weight.shape[0]
-            self.max_kernel_size = op.weight.shape[2] # kernel must be 1D or 2D square
+            self.max_kernel_size = op.weight.shape[2]  # kernel must be 1D or 2D square
             self.max_pad_size = op.padding[0]
             self.kernel_size = self.max_kernel_size
             self.pad = self.max_pad_size
@@ -86,7 +86,7 @@ class OnceForAllModule(nn.Module):
                 assert False, f'Unknown operation for OFA module: {op}'
 
             # parameters to store in the checkpoint file
-            self.max_kernel_size = nn.Parameter(data=torch.tensor(self.max_kernel_size),
+            self.max_kernel_size = nn.Parameter(data=torch.Tensor(self.max_kernel_size),
                                                 requires_grad=False)
             self.kernel_list = nn.Parameter(data=torch.Tensor(self.kernel_list),
                                             requires_grad=False)
@@ -126,7 +126,7 @@ class OnceForAllModule(nn.Module):
         self.op.weight.data = self.op.weight.data[inds]
         if self.op.bias is not None:
             self.op.bias.data = self.op.bias.data[inds]
-        if self.bn:
+        if self.bn is not None:
             self.bn.weight.data = self.bn.weight.data[inds]
             self.bn.bias.data = self.bn.bias.data[inds]
             self.bn.running_mean.data = self.bn.running_mean.data[inds]
@@ -135,7 +135,7 @@ class OnceForAllModule(nn.Module):
     def reset_out_ch_order(self):
         """Reset order of the output channel of the operators"""
         reset_ind = torch.argsort(self.out_ch_order)
-        self.op.weight.data = self.op.weight.data[reset_ind]
+        self.set_out_ch_order(reset_ind)
 
     def set_in_ch_order(self, inds, reset_order=False):
         """Set order of the input channel of the operators"""
@@ -150,9 +150,9 @@ class OnceForAllModule(nn.Module):
     def reset_in_ch_order(self):
         """Reset order of the input channel of the operators"""
         reset_ind = torch.argsort(self.in_ch_order)
-        self.op.weight.data = self.op.weight.data[:, reset_ind]
+        self.set_in_ch_order(reset_ind)
 
-    def forward(self, x): # pylint: disable=arguments-differ
+    def forward(self, x):  # pylint: disable=arguments-differ
         """Forward prop"""
         if self.pool is not None:
             x = self.clamp_pool(self.quantize_pool(self.pool(x)))
@@ -173,8 +173,8 @@ class OnceForAllModule(nn.Module):
                     flattened_weight = weight.view(weight.size(0), weight.size(1), -1, 9)
                 else:
                     flattened_weight = weight
-                weight = flattened_weight @ self.ktm_list[k_idx] # pylint: disable=undefined-loop-variable
-                pad = int(self.padding_list[k_idx].detach().cpu().item()) # pylint: disable=undefined-loop-variable
+                weight = flattened_weight @ self.ktm_list[k_idx]  # pylint: disable=undefined-loop-variable
+                pad = int(self.padding_list[k_idx].detach().cpu().item())  # pylint: disable=undefined-loop-variable
                 x = self.func(x, weight, bias, self.op.stride, pad, self.op.dilation,
                               self.op.groups)
 
@@ -312,6 +312,7 @@ class Conv2d(OnceForAllModule):
             func,
             bn,
         )
+
 
 class FusedConv2dReLU(Conv2d):
     """
@@ -606,7 +607,6 @@ def reset_depth_sampling(ofa_model):
                 if isinstance(target_attr, OnceForAllUnit):
                     _reset_depth(target_attr)
                     setattr(m, attr_str, target_attr)
-
 
     ofa_model.apply(_reset_depth_sampling)
 

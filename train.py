@@ -110,8 +110,8 @@ import ai8x
 import ai8x_ofa
 import datasets
 import nnplot
-import parse_qat_yaml
 import parse_ofa_yaml
+import parse_qat_yaml
 import parsecmd
 import sample
 
@@ -488,23 +488,24 @@ def main():
             else:
                 stats = ('Performance/Validation/', OrderedDict([('Loss', vloss), ('MSE', top1)]))
 
-        distiller.log_training_progress(stats, None, epoch, steps_completed=0, total_steps=1,
-                                        log_freq=1, loggers=all_tbloggers)
+            distiller.log_training_progress(stats, None, epoch, steps_completed=0, total_steps=1,
+                                            log_freq=1, loggers=all_tbloggers)
 
-        # Update the list of top scores achieved so far
-        update_training_scores_history(perf_scores_history, model, top1, top5, epoch, args)
+            # Update the list of top scores achieved so far
+            update_training_scores_history(perf_scores_history, model, top1, top5, epoch, args)
+
+            # Save the checkpoint
+            is_best = epoch == perf_scores_history[0].epoch
+            checkpoint_extras = {'current_top1': top1,
+                                 'best_top1': perf_scores_history[0].top1,
+                                 'best_epoch': perf_scores_history[0].epoch}
+            apputils.save_checkpoint(epoch, args.cnn, model, optimizer=optimizer,
+                                     scheduler=compression_scheduler, extras=checkpoint_extras,
+                                     is_best=is_best, name=args.name, dir=msglogger.logdir)
 
         if compression_scheduler:
             compression_scheduler.on_epoch_end(epoch, optimizer)
 
-        # Save the checkpoint
-        is_best = epoch == perf_scores_history[0].epoch
-        checkpoint_extras = {'current_top1': top1,
-                             'best_top1': perf_scores_history[0].top1,
-                             'best_epoch': perf_scores_history[0].epoch}
-        apputils.save_checkpoint(epoch, args.cnn, model, optimizer=optimizer,
-                                 scheduler=compression_scheduler, extras=checkpoint_extras,
-                                 is_best=is_best, name=args.name, dir=msglogger.logdir)
         if (args.ofa and (epoch >= ofa_policy['start_epoch']) and \
            ((epoch+1) % ofa_policy['validation_freq'] == 0)):
             stage, level = get_ofa_training_stage(epoch, args.ofa_stage_transition_list)
@@ -1309,31 +1310,31 @@ def create_ofa_training_stage_list(model, ofa_policy):
 
     max_kernel_level = model.get_max_elastic_kernel_level()
     if ofa_policy['elastic_kernel']['leveling']:
-        for level in range(max_kernel_level+1):
-            stage_transition_list.append((stage_transition_list[-1][0] + \
-                                          ofa_policy['elastic_kernel']['num_epochs'], 1, level))
+        for level in range(max_kernel_level):
+            stage_transition_list.append((stage_transition_list[-1][0] +
+                                          ofa_policy['elastic_kernel']['num_epochs'], 1, level+1))
     else:
-        stage_transition_list.append((stage_transition_list[-1][0] + \
+        stage_transition_list.append((stage_transition_list[-1][0] +
                                       ofa_policy['elastic_kernel']['num_epochs'], 1,
                                       max_kernel_level))
 
     max_depth_level = model.get_max_elastic_depth_level()
     if ofa_policy['elastic_depth']['leveling']:
-        for level in range(max_depth_level+1):
-            stage_transition_list.append((stage_transition_list[-1][0] + \
-                                          ofa_policy['elastic_depth']['num_epochs'], 2, level))
+        for level in range(max_depth_level):
+            stage_transition_list.append((stage_transition_list[-1][0] +
+                                          ofa_policy['elastic_depth']['num_epochs'], 2, level+1))
     else:
-        stage_transition_list.append((stage_transition_list[-1][0] + \
+        stage_transition_list.append((stage_transition_list[-1][0] +
                                       ofa_policy['elastic_depth']['num_epochs'], 2,
                                       max_depth_level))
 
     max_width_level = model.get_max_elastic_width_level()
     if ofa_policy['elastic_width']['leveling']:
-        for level in range(max_width_level+1):
-            stage_transition_list.append((stage_transition_list[-1][0] + \
-                                          ofa_policy['elastic_width']['num_epochs'], 3, level))
+        for level in range(max_width_level):
+            stage_transition_list.append((stage_transition_list[-1][0] +
+                                          ofa_policy['elastic_width']['num_epochs'], 3, level+1))
     else:
-        stage_transition_list.append((stage_transition_list[-1][0] + \
+        stage_transition_list.append((stage_transition_list[-1][0] +
                                       ofa_policy['elastic_width']['num_epochs'], 3,
                                       max_width_level))
 
@@ -1346,7 +1347,8 @@ def get_ofa_training_stage(epoch, stage_transition_list):
         if epoch < t[0]:
             break
 
-    return t[1], t[2] # pylint: disable=undefined-loop-variable
+    return t[1], t[2]  # pylint: disable=undefined-loop-variable
+
 
 class missingdict(dict):
     """This is a little trick to prevent KeyError"""
