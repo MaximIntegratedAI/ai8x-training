@@ -506,7 +506,7 @@ def main():
         if compression_scheduler:
             compression_scheduler.on_epoch_end(epoch, optimizer)
 
-        if (args.ofa and (epoch >= ofa_policy['start_epoch']) and \
+        if (args.ofa and (epoch >= ofa_policy['start_epoch']) and
            ((epoch+1) % ofa_policy['validation_freq'] == 0)):
             stage, level = get_ofa_training_stage(epoch, args.ofa_stage_transition_list)
             if args.name:
@@ -689,7 +689,7 @@ def train(train_loader, model, criterion, optimizer, epoch,
         if compression_scheduler:
             compression_scheduler.on_minibatch_end(epoch, train_step, steps_per_epoch, optimizer)
 
-         # Reset OFA sampling wrt OFA stage if necessary
+        # Reset OFA sampling wrt OFA stage if necessary
         if args.ofa:
             if stage == 1:
                 ai8x_ofa.reset_kernel_sampling(model)

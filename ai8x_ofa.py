@@ -173,8 +173,10 @@ class OnceForAllModule(nn.Module):
                     flattened_weight = weight.view(weight.size(0), weight.size(1), -1, 9)
                 else:
                     flattened_weight = weight
-                weight = flattened_weight @ self.ktm_list[k_idx]  # pylint: disable=undefined-loop-variable
-                pad = int(self.padding_list[k_idx].detach().cpu().item())  # pylint: disable=undefined-loop-variable
+                # pylint: disable=undefined-loop-variable
+                weight = flattened_weight @ self.ktm_list[k_idx]
+                # pylint: disable=undefined-loop-variable
+                pad = int(self.padding_list[k_idx].detach().cpu().item())
                 x = self.func(x, weight, bias, self.op.stride, pad, self.op.dilation,
                               self.op.groups)
 

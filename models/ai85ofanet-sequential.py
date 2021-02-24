@@ -9,8 +9,8 @@
 """
 Sequential Once For All network for AI85.
 """
-import random
 import copy
+import random
 
 import torch
 import torch.nn as nn
@@ -60,7 +60,7 @@ class OnceForAllSequentialUnit(nn.Module):
         """OFA Elastic depth search strategy"""
         with torch.no_grad():
             max_depth = len(self.layers)
-            min_depth = max_depth - level if 0 <= level < max_depth  else 1
+            min_depth = max_depth - level if 0 <= level < max_depth else 1
             self.depth = random.randint(min_depth, max_depth)
 
     def reset_depth_sampling(self):
@@ -70,8 +70,8 @@ class OnceForAllSequentialUnit(nn.Module):
 
     def forward(self, x):
         """Forward prop"""
-        for l in range(self.depth):
-            x = self.layers[l](x)
+        for l_idx in range(self.depth):
+            x = self.layers[l_idx](x)
         return x
 
 
@@ -177,19 +177,19 @@ class OnceForAllSequentialModel(nn.Module):
         """OFA Elastic width search strategy"""
         with torch.no_grad():
             max_unit_ind = len(self.units) - 1
+            last_out_ch = self.num_channels
             for u_ind, unit in enumerate(self.units):
                 max_layer_ind = unit.depth - 1
                 for l_ind in range(unit.depth):
                     layer = unit.layers[l_ind]
-                    if not(u_ind == 0 and l_ind == 0):
-                        layer.set_channels(in_channels=last_out_ch)
+                    layer.set_channels(in_channels=last_out_ch)
 
                     if (u_ind == max_unit_ind) and (l_ind == max_layer_ind):
                         layer.set_channels(out_channels=self.units[-1].layers[-1].out_channels)
                     else:
-                        pos_width_list = [layer.op.out_channels]
-                        for l in range(level):
-                            pos_width_list.append(int((1.0 - (l+1)*0.25) * layer.op.out_channels))
+                        pos_width_list = []
+                        for lev in range(level+1):
+                            pos_width_list.append(int((1.0 - lev*0.25) * layer.op.out_channels))
 
                         random_width = random.choice(pos_width_list)
                         layer.set_channels(out_channels=random_width)
@@ -325,7 +325,7 @@ class OnceForAllSequentialModel(nn.Module):
                         prev_layer_width = model_arch['width_list'][u_ind-1][-1]
 
                 num_layer_params = prev_layer_width * model_arch['width_list'][u_ind][l_ind] * \
-                                   model_arch['kernel_list'][u_ind][l_ind]
+                                                      model_arch['kernel_list'][u_ind][l_ind]
                 if model_arch['unit'] == OnceForAll2DSequentialModel:
                     num_layer_params *= model_arch['kernel_list'][u_ind][l_ind]
 
@@ -345,7 +345,7 @@ class OnceForAllSequentialModel(nn.Module):
         width_list = new_model_arch['width_list']
         kernel_list = new_model_arch['kernel_list']
 
-        #mutate model depth
+        # mutate model depth
         if mutate_depth:
             for unit_idx in range(new_model_arch['n_units']):
                 if random.random() < prob_mutation:
@@ -357,22 +357,22 @@ class OnceForAllSequentialModel(nn.Module):
                         kernel_list[unit_idx] = kernel_list[unit_idx][:depth]
                     else:
                         for i in range(depth - depth_list[unit_idx]):
-                            max_kernel = base_arch['kernel_list'][unit_idx] \
+                            max_kernel = base_arch['kernel_list'][unit_idx]\
                                          [depth_list[unit_idx] + i]
                             kernel_opts = list(range(1, max_kernel+1, 2))
                             kernel_list[unit_idx].append(random.choice(kernel_opts))
 
                             max_width = base_arch['width_list'][unit_idx][depth_list[unit_idx] + i]
                             if mutate_width:
-                                width_opts = [max_width]
-                                for l in range(3):
-                                    width_opts.append(int((1.0 - (l+1)*0.25) * max_width))
+                                width_opts = []
+                                for lev in range(4):
+                                    width_opts.append(int((1.0 - lev*0.25) * max_width))
                                 width_list[unit_idx].append(random.choice(width_opts))
                             else:
                                 width_list[unit_idx].append(max_width)
                     depth_list[unit_idx] = depth
 
-        #mutate layer parameters
+        # mutate layer parameters
         for unit_idx, _ in enumerate(width_list):
             for layer_idx, _ in enumerate(width_list[unit_idx]):
                 if random.random() < prob_mutation:
@@ -383,9 +383,9 @@ class OnceForAllSequentialModel(nn.Module):
 
                     if mutate_width:
                         max_width = base_arch['width_list'][unit_idx][layer_idx]
-                        width_opts = [max_width]
-                        for l in range(3):
-                            width_opts.append(int((1.0 - (l+1)*0.25) * max_width))
+                        width_opts = []
+                        for lev in range(4):
+                            width_opts.append(int((1.0 - lev*0.25) * max_width))
                         width_list[unit_idx][layer_idx] = random.choice(width_opts)
 
         width_list[-1][-1] = base_arch['width_list'][-1][-1]
@@ -407,12 +407,12 @@ class OnceForAllSequentialModel(nn.Module):
         width_list = []
         kernel_list = []
 
-        #crossover model depths
+        # crossover model depths
         for unit_idx in range(model1['n_units']):
             depth_list.append(random.choice([model1['depth_list'][unit_idx],
                                              model2['depth_list'][unit_idx]]))
 
-        #crossover layers
+        # crossover layers
         for unit_idx, depth in enumerate(depth_list):
             width_list.append([])
             kernel_list.append([])
@@ -426,8 +426,9 @@ class OnceForAllSequentialModel(nn.Module):
                 else:
                     width_list[unit_idx].append(random.choice([model1['width_list'][unit_idx][d],
                                                                model2['width_list'][unit_idx][d]]))
+                    # pylint: disable=line-too-long
                     kernel_list[unit_idx].append(random.choice([model1['kernel_list'][unit_idx][d],
-                                                                model2['kernel_list'][unit_idx][d]])) # pylint: disable=line-too-long
+                                                                model2['kernel_list'][unit_idx][d]]))
 
         new_model_arch = {'num_classes': model1['num_classes'],
                           'num_channels': model1['num_channels'],
@@ -447,6 +448,7 @@ class OnceForAll2DSequentialModel(OnceForAllSequentialModel):
                  width_list, kernel_list, bn, **kwargs):
         super().__init__(num_classes, num_channels, dimensions, bias, n_units, depth_list,
                          width_list, kernel_list, bn, OnceForAll2DSequentialUnit, **kwargs)
+
 
 class OnceForAll1DSequentialModel(OnceForAllSequentialModel):
     """
