@@ -86,7 +86,7 @@ class OnceForAllModule(nn.Module):
                 assert False, f'Unknown operation for OFA module: {op}'
 
             # parameters to store in the checkpoint file
-            self.max_kernel_size = nn.Parameter(data=torch.Tensor(self.max_kernel_size),
+            self.max_kernel_size = nn.Parameter(data=torch.tensor(self.max_kernel_size),
                                                 requires_grad=False)
             self.kernel_list = nn.Parameter(data=torch.Tensor(self.kernel_list),
                                             requires_grad=False)
@@ -162,7 +162,7 @@ class OnceForAllModule(nn.Module):
             if bias is not None:
                 bias = bias[:self.out_channels]
 
-            if self.kernel_size == self.max_kernel_size:
+            if self.kernel_size == int(self.max_kernel_size.detach().cpu().item()):
                 x = self.func(x, weight, bias, self.op.stride, self.max_pad_size, self.op.dilation,
                               self.op.groups)
             else:

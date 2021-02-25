@@ -324,8 +324,8 @@ class OnceForAllSequentialModel(nn.Module):
                     else:
                         prev_layer_width = model_arch['width_list'][u_ind-1][-1]
 
-                num_layer_params = prev_layer_width * model_arch['width_list'][u_ind][l_ind] * \
-                                                      model_arch['kernel_list'][u_ind][l_ind]
+                num_layer_params = prev_layer_width * model_arch['width_list'][u_ind][l_ind] *\
+                                   model_arch['kernel_list'][u_ind][l_ind]
                 if model_arch['unit'] == OnceForAll2DSequentialModel:
                     num_layer_params *= model_arch['kernel_list'][u_ind][l_ind]
 
@@ -357,8 +357,8 @@ class OnceForAllSequentialModel(nn.Module):
                         kernel_list[unit_idx] = kernel_list[unit_idx][:depth]
                     else:
                         for i in range(depth - depth_list[unit_idx]):
-                            max_kernel = base_arch['kernel_list'][unit_idx]\
-                                         [depth_list[unit_idx] + i]
+                            # pylint: disable=line-too-long
+                            max_kernel = base_arch['kernel_list'][unit_idx][depth_list[unit_idx] + i]
                             kernel_opts = list(range(1, max_kernel+1, 2))
                             kernel_list[unit_idx].append(random.choice(kernel_opts))
 
