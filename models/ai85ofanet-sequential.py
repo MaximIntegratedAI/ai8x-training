@@ -121,8 +121,13 @@ class OnceForAllSequentialModel(nn.Module):
         self.unit = unit
 
         self.units = nn.ModuleList([])
+
+        inp_2d = True
+        if len(dimensions) == 1 or dimensions[1] == 1:
+            inp_2d = False
+
         dim1 = dimensions[0]
-        dim2 = dimensions[1] if len(dimensions) == 2 else 1
+        dim2 = dimensions[1] if inp_2d else 1
 
         last_width = num_channels
         for i in range(n_units):
@@ -131,7 +136,7 @@ class OnceForAllSequentialModel(nn.Module):
             else:
                 pooling = True
                 dim1 = dim1 // 2
-                dim2 = (dim2 // 2) if len(dimensions) == 2 else 1
+                dim2 = (dim2 // 2) if inp_2d else 1
 
             self.units.append(unit(depth_list[i], kernel_list[i], width_list[i], last_width, bias,
                                    pooling, bn, **kwargs))
