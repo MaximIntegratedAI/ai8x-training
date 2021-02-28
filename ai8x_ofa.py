@@ -170,7 +170,8 @@ class OnceForAllModule(nn.Module):
                     if k_size == self.kernel_size:
                         break
                 if weight.dim() == 4:
-                    flattened_weight = weight.view(weight.size(0), weight.size(1), -1, 9)
+                    flattened_weight = weight.view(weight.size(0), weight.size(1), -1,
+                                                   self.max_kernel_size**2)
                 else:
                     flattened_weight = weight
                 # pylint: disable=undefined-loop-variable

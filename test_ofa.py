@@ -202,8 +202,8 @@ def test_elastic_kernel_2d():
         print('\t\tTest for kernel sample:', end='\t')
         for _ in range(num_trials):
             ai8x_ofa.sample_subnet_kernel(ofa_unit, level=level)
-            for l in ofa_unit.layers:
-                k_size_list.append(l.kernel_size)
+            for layer in ofa_unit.layers:
+                k_size_list.append(layer.kernel_size)
         assert np.unique(k_size_list).shape[0] == (level+1), f'FAIL!! Expected number of ' \
             f'observed kernels must be {level+1} but it has {np.unique(k_size_list).shape[0]}'
         print('PASS!')
@@ -261,8 +261,8 @@ def test_elastic_kernel_1d():
         print('\t\tTest for kernel sample:', end='\t')
         for _ in range(num_trials):
             ai8x_ofa.sample_subnet_kernel(ofa_unit, level=level)
-            for l in ofa_unit.layers:
-                k_size_list.append(l.kernel_size)
+            for layer in ofa_unit.layers:
+                k_size_list.append(layer.kernel_size)
         assert np.unique(k_size_list).shape[0] == (level+1), f'FAIL!! Expected number of ' \
             f'observed kernels must be {level+1} but it has {np.unique(k_size_list).shape[0]}'
         print('PASS!')

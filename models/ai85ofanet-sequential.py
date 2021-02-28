@@ -180,6 +180,8 @@ class OnceForAllSequentialModel(nn.Module):
 
     def sample_subnet_width(self, level=0):
         """OFA Elastic width search strategy"""
+        assert level < 4, 'Elastic width level must be smaller than 4!!'
+
         with torch.no_grad():
             max_unit_ind = len(self.units) - 1
             last_out_ch = self.num_channels
@@ -329,8 +331,8 @@ class OnceForAllSequentialModel(nn.Module):
                     else:
                         prev_layer_width = model_arch['width_list'][u_ind-1][-1]
 
-                num_layer_params = prev_layer_width * model_arch['width_list'][u_ind][l_ind] *\
-                                   model_arch['kernel_list'][u_ind][l_ind]
+                num_layer_params = prev_layer_width * model_arch['width_list'][u_ind][l_ind] * \
+                    model_arch['kernel_list'][u_ind][l_ind]
                 if model_arch['unit'] == OnceForAll2DSequentialModel:
                     num_layer_params *= model_arch['kernel_list'][u_ind][l_ind]
 
@@ -353,21 +355,21 @@ class OnceForAllSequentialModel(nn.Module):
         # mutate model depth
         if mutate_depth:
             for unit_idx in range(new_model_arch['n_units']):
+                depth = depth_list[unit_idx]
                 if random.random() < prob_mutation:
                     min_depth = 1
                     max_depth = base_arch['depth_list'][unit_idx]
-                    depth = random.randint(min_depth, max_depth)
-                    if depth <= depth_list[unit_idx]:
-                        width_list[unit_idx] = width_list[unit_idx][:depth]
-                        kernel_list[unit_idx] = kernel_list[unit_idx][:depth]
+                    new_depth = random.randint(min_depth, max_depth)
+                    if new_depth <= depth:
+                        width_list[unit_idx] = width_list[unit_idx][:new_depth]
+                        kernel_list[unit_idx] = kernel_list[unit_idx][:new_depth]
                     else:
-                        for i in range(depth - depth_list[unit_idx]):
-                            # pylint: disable=line-too-long
-                            max_kernel = base_arch['kernel_list'][unit_idx][depth_list[unit_idx] + i]
+                        for i in range(new_depth - depth):
+                            max_kernel = base_arch['kernel_list'][unit_idx][depth + i]
                             kernel_opts = list(range(1, max_kernel+1, 2))
                             kernel_list[unit_idx].append(random.choice(kernel_opts))
 
-                            max_width = base_arch['width_list'][unit_idx][depth_list[unit_idx] + i]
+                            max_width = base_arch['width_list'][unit_idx][depth + i]
                             if mutate_width:
                                 width_opts = []
                                 for lev in range(4):
@@ -375,7 +377,7 @@ class OnceForAllSequentialModel(nn.Module):
                                 width_list[unit_idx].append(random.choice(width_opts))
                             else:
                                 width_list[unit_idx].append(max_width)
-                    depth_list[unit_idx] = depth
+                    depth_list[unit_idx] = new_depth
 
         # mutate layer parameters
         for unit_idx, _ in enumerate(width_list):
@@ -429,11 +431,10 @@ class OnceForAllSequentialModel(nn.Module):
                     width_list[unit_idx].append(model1['width_list'][unit_idx][d])
                     kernel_list[unit_idx].append(model1['kernel_list'][unit_idx][d])
                 else:
-                    width_list[unit_idx].append(random.choice([model1['width_list'][unit_idx][d],
-                                                               model2['width_list'][unit_idx][d]]))
-                    # pylint: disable=line-too-long
-                    kernel_list[unit_idx].append(random.choice([model1['kernel_list'][unit_idx][d],
-                                                                model2['kernel_list'][unit_idx][d]]))
+                    width_list[unit_idx].append(random.choice(
+                        [model1['width_list'][unit_idx][d], model2['width_list'][unit_idx][d]]))
+                    kernel_list[unit_idx].append(random.choice(
+                        [model1['kernel_list'][unit_idx][d], model2['kernel_list'][unit_idx][d]]))
 
         new_model_arch = {'num_classes': model1['num_classes'],
                           'num_channels': model1['num_channels'],
