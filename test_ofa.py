@@ -439,13 +439,13 @@ def test_elastic_width_2d():
         for u_idx, u in enumerate(seq_ofa_model.units):
             for i in range(u.depth):
                 assert u.layers[i].in_channels == u.layers[i].op.in_channels, f'FAIL!! ' \
-                                f'Unit {u_idx}, Layer {i}: ' \
-                                f'Expected in channels is {u.layers[i].op.in_channels}. ' \
-                                f'It has {u.layers[i].in_channels}'
+                    f'Unit {u_idx}, Layer {i}: ' \
+                    f'Expected in channels is {u.layers[i].op.in_channels}. ' \
+                    f'It has {u.layers[i].in_channels}'
                 assert u.layers[i].out_channels == u.layers[i].op.out_channels, f'FAIL!! ' \
-                                f'Unit {u_idx}, Layer {i}: ' \
-                                f'Expected out channels is {u.layers[i].op.out_channels}. ' \
-                                f'It has {u.layers[i].out_channels}'
+                    f'Unit {u_idx}, Layer {i}: ' \
+                    f'Expected out channels is {u.layers[i].op.out_channels}. ' \
+                    f'It has {u.layers[i].out_channels}'
     print('PASS!')
 
     print('\t\tTest for output value:', end='\t')
