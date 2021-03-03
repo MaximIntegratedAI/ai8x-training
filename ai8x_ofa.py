@@ -115,6 +115,21 @@ class OnceForAllModule(nn.Module):
         """Set kernel size"""
         self.kernel_size = kernel_size
 
+    def sample_subnet_kernel(self, level):
+        """OFA Elastic kernel search strategy"""
+        kernel_opts = [int(self.max_kernel_size.detach().cpu().item())]
+        kernel_list = self.kernel_list.detach().cpu().numpy()
+        k_level = level if level >= 0 else kernel_list.size
+        for i in range(k_level):
+            kernel_opts.append(int(kernel_list[i]))
+        with torch.no_grad():
+            self.kernel_size = random.choice(kernel_opts)
+
+    def reset_kernel_sampling(self):
+        """Resets kernel to maximum widths"""
+        with torch.no_grad():
+            self.set_kernel_size(self.op.weight.shape[2])
+
     def set_out_ch_order(self, inds, reset_order=False):
         """Set order of the output channel of the operators"""
         if reset_order:
@@ -516,6 +531,14 @@ class OnceForAllModel(metaclass=abc.ABCMeta):
                 callable(subclass.sample_subnet_width) and
                 hasattr(subclass, 'reset_width_sampling') and
                 callable(subclass.reset_width_sampling) and
+                hasattr(subclass, 'sample_subnet_depth') and
+                callable(subclass.sample_subnet_depth) and
+                hasattr(subclass, 'reset_depth_sampling') and
+                callable(subclass.reset_depth_sampling) and
+                hasattr(subclass, 'sample_subnet_kernel') and
+                callable(subclass.sample_subnet_kernel) and
+                hasattr(subclass, 'reset_kernel_sampling') and
+                callable(subclass.reset_kernel_sampling) and
                 hasattr(subclass, 'get_max_elastic_width_level') and
                 callable(subclass.get_max_elastic_width_level) and
                 hasattr(subclass, 'get_max_elastic_depth_level') and
@@ -528,24 +551,9 @@ def sample_subnet_kernel(ofa_model, level=0):
     """
     Sample kernels of the OnceForAll modules in the model
     """
-    def _sample_kernel(layer):
-        kernel_opts = [int(layer.max_kernel_size.detach().cpu().item())]
-        kernel_list = layer.kernel_list.detach().cpu().numpy()
-        k_level = level if level >= 0 else kernel_list.size
-        for i in range(k_level):
-            kernel_opts.append(int(kernel_list[i]))
-        with torch.no_grad():
-            layer.kernel_size = random.choice(kernel_opts)
-
     def _sample_subnet_kernel(m):
-        if isinstance(m, OnceForAllModule):
-            _sample_kernel(m)
-        else:
-            for attr_str in dir(m):
-                target_attr = getattr(m, attr_str)
-                if isinstance(target_attr, OnceForAllModule):
-                    _sample_kernel(target_attr)
-                    setattr(m, attr_str, target_attr)
+        if isinstance(m, OnceForAllModel):
+            m.sample_subnet_kernel(level)
 
     ofa_model.apply(_sample_subnet_kernel)
 
@@ -554,19 +562,9 @@ def reset_kernel_sampling(ofa_model):
     """
     Reset kernel sampling for OnceForAll modules in the model
     """
-    def _reset_kernel(layer):
-        with torch.no_grad():
-            layer.kernel_size = layer.max_kernel_size.detach().cpu().item()
-
     def _reset_kernel_sampling(m):
-        if isinstance(m, OnceForAllModule):
-            _reset_kernel(m)
-        else:
-            for attr_str in dir(m):
-                target_attr = getattr(m, attr_str)
-                if isinstance(target_attr, OnceForAllModule):
-                    _reset_kernel(target_attr)
-                    setattr(m, attr_str, target_attr)
+        if isinstance(m, OnceForAllModel):
+            m.reset_kernel_sampling()
 
     ofa_model.apply(_reset_kernel_sampling)
 
@@ -575,20 +573,11 @@ def sample_subnet_depth(ofa_model, level=0, sample_kernel=True):
     """
     Sample depths of the OnceForAll units in the model
     """
-    def _sample_depth(unit):
-        if sample_kernel:
-            sample_subnet_kernel(unit, level=-1)
-        unit.sample_subnet_depth(level)
-
     def _sample_subnet_depth(m):
-        if isinstance(m, OnceForAllUnit):
-            _sample_depth(m)
-        else:
-            for attr_str in dir(m):
-                target_attr = getattr(m, attr_str)
-                if isinstance(target_attr, OnceForAllUnit):
-                    _sample_depth(target_attr)
-                    setattr(m, attr_str, target_attr)
+        if isinstance(m, OnceForAllModel):
+            if sample_kernel:
+                m.sample_subnet_kernel(level=-1)
+            m.sample_subnet_depth(level)
 
     ofa_model.apply(_sample_subnet_depth)
 
@@ -597,19 +586,10 @@ def reset_depth_sampling(ofa_model):
     """
     Reset depth sampling for OnceForAll modules in the model
     """
-    def _reset_depth(unit):
-        reset_kernel_sampling(unit)
-        unit.reset_depth_sampling()
-
     def _reset_depth_sampling(m):
-        if isinstance(m, OnceForAllUnit):
-            _reset_depth(m)
-        else:
-            for attr_str in dir(m):
-                target_attr = getattr(m, attr_str)
-                if isinstance(target_attr, OnceForAllUnit):
-                    _reset_depth(target_attr)
-                    setattr(m, attr_str, target_attr)
+        if isinstance(m, OnceForAllModel):
+            m.reset_kernel_sampling()
+            m.reset_depth_sampling()
 
     ofa_model.apply(_reset_depth_sampling)
 
@@ -621,8 +601,8 @@ def sample_subnet_width(ofa_model, level=0, sample_depth=True):
     def _sample_subnet_width(m):
         if isinstance(m, OnceForAllModel):
             if sample_depth:
-                with torch.no_grad():
-                    sample_subnet_depth(m, level=-1)
+               with torch.no_grad():
+                   sample_subnet_depth(m, level=-1)
 
             m.sample_subnet_width(level)
 

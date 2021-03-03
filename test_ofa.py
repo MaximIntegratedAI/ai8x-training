@@ -420,7 +420,7 @@ def test_elastic_depth_1d():
 
 def test_elastic_width_2d():
     """Test elastic width search for 2d model"""
-    print('Test Elastic Depth 2d')
+    print('Test Elastic Width 2d')
     init_width = 1
     inp_dim = (32, 32)
     num_trials = 50

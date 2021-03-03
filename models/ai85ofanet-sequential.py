@@ -52,9 +52,33 @@ class OnceForAllSequentialUnit(nn.Module):
                 self.layers.append(layer_op(in_channels, width, kernel_size, stride=1,
                                             padding=padding, bias=bias, **kwargs))
 
+    def get_max_elastic_kernel_level(self):
+        """Returns max depth level to be used OFA elastic kernel search"""
+        max_kernel_level = 0
+        for layer in self.layers:
+            max_kernel_level = max(layer.op.kernel_size[0]//2, max_kernel_level)
+
+        return max_kernel_level
+
     def get_max_elastic_depth_level(self):
         """Returns max depth level to be used OFA elastic depth search"""
         return len(self.layers) - 1
+
+    def get_max_elastic_width_level(self):  # pylint: disable=no-self-use
+        """Returns max width level to be used OFA elastic width search"""
+        return 0
+
+    def sample_subnet_kernel(self, level):
+        """OFA Elastic kernel search strategy"""
+        with torch.no_grad():
+            for layer in self.layers:
+                layer.sample_subnet_kernel(level)
+
+    def reset_kernel_sampling(self):
+        """Resets kernel to maximum kernel"""
+        with torch.no_grad():
+            for layer in self.layers:
+                layer.reset_kernel_sampling()
 
     def sample_subnet_depth(self, level):
         """OFA Elastic depth search strategy"""
@@ -67,6 +91,14 @@ class OnceForAllSequentialUnit(nn.Module):
         """Resets depth to maximum depth"""
         with torch.no_grad():
             self.depth = len(self.layers)
+
+    def sample_subnet_width(self, level):
+        """OFA Elastic width search strategy"""
+        pass  # pylint: disable=unnecessary-pass
+
+    def reset_width_sampling(self):
+        """Resets width sampling"""
+        pass  # pylint: disable=unnecessary-pass
 
     def forward(self, x):
         """Forward prop"""
@@ -178,6 +210,32 @@ class OnceForAllSequentialModel(nn.Module):
 
         return max_kernel_level
 
+    def sample_subnet_kernel(self, level=0):
+        """OFA Elastic kernel search strategy"""
+        with torch.no_grad():
+            for unit in self.units:
+                for layer in unit.layers:
+                    layer.sample_subnet_kernel(level)
+
+    def reset_kernel_sampling(self):
+        """Resets kernel to maximum widths"""
+        with torch.no_grad():
+            for unit in self.units:
+                for layer in unit.layers:
+                    layer.reset_kernel_sampling()
+
+    def sample_subnet_depth(self, level=0):
+        """OFA Elastic depth search strategy"""
+        with torch.no_grad():
+            for unit in self.units:
+                unit.sample_subnet_depth(level)
+
+    def reset_depth_sampling(self):
+        """Resets depth to maximum widths"""
+        with torch.no_grad():
+            for unit in self.units:
+                unit.reset_depth_sampling()
+
     def sample_subnet_width(self, level=0):
         """OFA Elastic width search strategy"""
         assert level < 4, 'Elastic width level must be smaller than 4!!'
@@ -211,7 +269,7 @@ class OnceForAllSequentialModel(nn.Module):
                 for layer in unit.layers:
                     layer.set_channels(in_channels=layer.op.in_channels,
                                        out_channels=layer.op.out_channels)
-            self.sort_channels()
+        self.sort_channels()
 
     def sort_channels(self):
         """Sorts channels wrt output channel kernels importance"""
