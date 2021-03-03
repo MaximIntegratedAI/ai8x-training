@@ -601,8 +601,8 @@ def sample_subnet_width(ofa_model, level=0, sample_depth=True):
     def _sample_subnet_width(m):
         if isinstance(m, OnceForAllModel):
             if sample_depth:
-               with torch.no_grad():
-                   sample_subnet_depth(m, level=-1)
+                with torch.no_grad():
+                    sample_subnet_depth(m, level=-1)
 
             m.sample_subnet_width(level)
 
