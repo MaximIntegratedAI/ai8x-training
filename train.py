@@ -295,7 +295,7 @@ def main():
 
     # Get policy for once for all training policy
     ofa_policy = parse_ofa_yaml.parse(args.ofa_policy) \
-        if args.ofa_policy.lower() != "none" else None
+        if args.ofa and args.ofa_policy.lower() != '' else None
 
     # We can optionally resume from a checkpoint
     optimizer = None
