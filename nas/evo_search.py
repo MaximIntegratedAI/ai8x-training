@@ -11,7 +11,9 @@ Evolutionary search for NAS
 """
 
 import time
+
 import numpy as np
+
 import nas_utils
 
 

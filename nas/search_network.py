@@ -11,11 +11,11 @@ Application to run evolutionary search over trained Once For All model.
 """
 
 import argparse
-import os
 import fnmatch
-from pydoc import locate
-import sys
 import inspect
+import os
+import sys
+from pydoc import locate
 
 import torch
 from torch.utils.data import DataLoader
@@ -24,17 +24,17 @@ currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentfram
 parentdir = os.path.dirname(currentdir)
 sys.path.insert(0, parentdir)
 
-import ai8x  # pylint: disable=wrong-import-position
-import parse_ofa_yaml # pylint: disable=wrong-import-position
-import nas_utils # pylint: disable=wrong-import-position
-from evo_search import EvolutionSearch # pylint: disable=wrong-import-position
+import nas_utils  # pylint: disable=wrong-import-position
+from evo_search import EvolutionSearch  # pylint: disable=wrong-import-position
+import ai8x   # pylint: disable=wrong-import-position
+import parse_ofa_yaml  # pylint: disable=wrong-import-position
 
 
 def parse_args(model_names, dataset_names):
     """Return the parsed arguments"""
-    parser = argparse.ArgumentParser(description='Evolutionary search for a trained once ' \
+    parser = argparse.ArgumentParser(description='Evolutionary search for a trained once '
                                                  'for all model')
-    parser.add_argument('--model_path', metavar='DIR', required=True, help='path to model ' \
+    parser.add_argument('--model_path', metavar='DIR', required=True, help='path to model '
                                                                            'checkpoint')
     parser.add_argument('--arch', '-a', '--model', metavar='ARCH', required=True,
                         type=lambda s: s.lower(), dest='arch', choices=model_names,
@@ -49,7 +49,7 @@ def parse_args(model_names, dataset_names):
                              '`use bias` flag to true')
 
     parser.add_argument('--ofa-policy', dest='ofa_policy', required=True,
-                        help='path to YAML file that defines the OFA ' \
+                        help='path to YAML file that defines the OFA '
                              '(once for all training) policy')
 
     return parser.parse_args()
@@ -67,6 +67,7 @@ def get_evo_search_params(ofa_policy):
                 evo_search_params[key] = ofa_policy['evolution_search'][key]
 
     return evo_search_params
+
 
 def load_models():
     """Dynamically load models"""
@@ -170,7 +171,7 @@ def main():
 
     # Get policy for once for all training policy
     ofa_policy = parse_ofa_yaml.parse(args.ofa_policy) \
-                 if args.ofa_policy.lower() != '' else None
+        if args.ofa_policy.lower() != '' else None
 
     # Get data loaders
     train_loader, val_loader = get_data_loaders(supported_sources, args)
@@ -195,6 +196,7 @@ def main():
     best_arch, best_acc = evo_search.run(evo_search_params['constraints'], train_loader,
                                          val_loader, args.device)
     print(best_arch, best_acc)
+
 
 if __name__ == '__main__':
     main()
