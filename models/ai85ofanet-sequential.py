@@ -391,7 +391,7 @@ class OnceForAllSequentialModel(nn.Module):
 
                 num_layer_params = prev_layer_width * model_arch['width_list'][u_ind][l_ind] * \
                     model_arch['kernel_list'][u_ind][l_ind]
-                if model_arch['unit'] == OnceForAll2DSequentialModel:
+                if model_arch['unit'] == OnceForAll2DSequentialUnit:
                     num_layer_params *= model_arch['kernel_list'][u_ind][l_ind]
 
                 num_params += num_layer_params
