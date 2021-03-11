@@ -651,9 +651,8 @@ def train(train_loader, model, criterion, optimizer, epoch,
                     create_ofa_kd_policy(model, compression_scheduler, epoch, args.epochs, args)
                 elif 'teacher_model' in args.ofa_kd_params and \
                      args.ofa_kd_params['teacher_model'] == 'prev_stage_model':
-                    next_stage_start_epoch = get_next_stage_start_epoch(epoch,
-                                                                        args.ofa_stage_transition_list,
-                                                                        args.epochs)
+                    next_stage_start_epoch = get_next_stage_start_epoch(
+                        epoch, args.ofa_stage_transition_list, args.epochs)
                     create_ofa_kd_policy(model, compression_scheduler, epoch,
                                          next_stage_start_epoch, args)
 
