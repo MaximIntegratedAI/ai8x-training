@@ -9,6 +9,11 @@ elastic_depth:
 elastic_width:
   leveling: True
   num_epochs: 4000
+kd_params:
+  teacher_model: 'full_model'  # 'prev_stage_model'
+  distill_loss: 0.5
+  student_loss: 0.5
+  temperature: 1
 evolution_search:
   population_size: 100
   prob_mutation: 0.2

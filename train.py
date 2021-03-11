@@ -60,6 +60,7 @@ models, or with the provided sample models:
 - MobileNet for ImageNet: https://github.com/marvis/pytorch-mobilenet
 """
 
+import copy
 import fnmatch
 import logging
 import operator
@@ -440,6 +441,8 @@ def main():
                                         'OnceForAllModel interface for OFA training!'
         if ofa_policy:
             args.ofa_stage_transition_list = create_ofa_training_stage_list(model, ofa_policy)
+            args.ofa_kd_params = ofa_policy['kd_params'] if 'kd_params' in ofa_policy else None
+            args.ofa_kd_policy = None
 
     vloss = 10**6
     for epoch in range(start_epoch, ending_epoch):
@@ -507,7 +510,7 @@ def main():
             compression_scheduler.on_epoch_end(epoch, optimizer)
 
         if (args.ofa and (epoch >= ofa_policy['start_epoch']) and
-           ((epoch+1) % ofa_policy['validation_freq'] == 0)):
+            ((epoch+1) % ofa_policy['validation_freq'] == 0)):
             stage, level = get_ofa_training_stage(epoch, args.ofa_stage_transition_list)
             if args.name:
                 ofa_checkpoint_name = f'{args.name}_ofa_stg{stage}_lev{level}'
@@ -586,6 +589,23 @@ def create_optimizer(model, args):
     return optimizer
 
 
+def create_ofa_kd_policy(model, compression_scheduler, epoch, next_state_start_epoch, args):
+    """Create knowledge distillation policy for nas"""
+    teacher = copy.deepcopy(model)
+    dlw = distiller.DistillationLossWeights(args.ofa_kd_params['distill_loss'],
+                                            args.ofa_kd_params['student_loss'], 0)
+    args.ofa_kd_policy = distiller.KnowledgeDistillationPolicy(model, teacher,
+        args.ofa_kd_params['temperature'], dlw)
+    compression_scheduler.add_policy(args.ofa_kd_policy, starting_epoch=epoch,
+                                     ending_epoch=next_state_start_epoch, frequency=1)
+
+    msglogger.info('\nStudent-Teacher knowledge distillation enabled for NAS:')
+    msglogger.info('\tStart Epoch: %d, End Epoch: %d', epoch, next_state_start_epoch)
+    msglogger.info('\tTemperature: %s', args.ofa_kd_params['temperature'])
+    msglogger.info('\tLoss Weights (distillation | student | teacher): %s',
+                ' | '.join(['{:.2f}'.format(val) for val in dlw]))
+
+
 def train(train_loader, model, criterion, optimizer, epoch,
           compression_scheduler, loggers, args):
     """Training loop for one epoch."""
@@ -617,9 +637,24 @@ def train(train_loader, model, criterion, optimizer, epoch,
     if args.ofa:
         if args.ofa_stage_transition_list is not None:
             stage, level = get_ofa_training_stage(epoch, args.ofa_stage_transition_list)
+            prev_stage, _ = get_ofa_training_stage(epoch-1,
+                args.ofa_stage_transition_list)
         else:
-            stage = 0
+            stage = prev_stage = 0
             level = 0
+
+        if prev_stage != stage:
+            if args.ofa_kd_params:
+                if ('teacher_model' not in args.ofa_kd_params) or \
+                    ('teacher_model' in args.ofa_kd_params and \
+                    args.ofa_kd_params['teacher_model'] == 'full_model' and prev_stage == 0):
+                    create_ofa_kd_policy(model, compression_scheduler, epoch, args.epochs, args)
+                elif 'teacher_model' in args.ofa_kd_params and \
+                    args.ofa_kd_params['teacher_model'] == 'prev_stage_model':
+                    next_stage_start_epoch = get_next_stage_start_epoch(epoch,
+                        args.ofa_stage_transition_list, args.epochs)
+                    create_ofa_kd_policy(model, compression_scheduler, epoch,
+                                         next_stage_start_epoch, args)
 
     # Switch to train mode
     model.train()
@@ -644,7 +679,10 @@ def train(train_loader, model, criterion, optimizer, epoch,
             compression_scheduler.on_minibatch_begin(epoch, train_step, steps_per_epoch, optimizer)
 
         if not hasattr(args, 'kd_policy') or args.kd_policy is None:
-            output = model(inputs)
+            if not hasattr(args, 'ofa_kd_policy') or args.ofa_kd_policy is None:
+                output = model(inputs)
+            else:
+                output = args.ofa_kd_policy.forward(inputs)
         else:
             output = args.kd_policy.forward(inputs)
 
@@ -1304,7 +1342,7 @@ def greedy(model, criterion, _optimizer, loggers, args):
 def create_ofa_training_stage_list(model, ofa_policy):
     """Create list to define OFA stage transition epochs"""
     stage_transition_list = []
-    print(ofa_policy)
+    msglogger.info('Ofa Policy: %s', ofa_policy)
 
     stage_transition_list.append((ofa_policy['start_epoch'], 0, 0))
 
@@ -1348,6 +1386,21 @@ def get_ofa_training_stage(epoch, stage_transition_list):
             break
 
     return t[1], t[2]  # pylint: disable=undefined-loop-variable
+
+
+def get_next_stage_start_epoch(epoch, stage_transition_list, num_epochs):
+    """Returns the starting epoch of the following stage"""
+    current_stage = None
+    print(stage_transition_list, epoch)
+    for stg_idx, t in enumerate(stage_transition_list):
+        if epoch < t[0]:
+            if current_stage is None:
+                current_stage = t[1]
+            if stg_idx == len(stage_transition_list)-1:
+                return num_epochs
+            if current_stage != stage_transition_list[stg_idx+1][1]:
+                return t[0]
+    return num_epochs
 
 
 class missingdict(dict):
