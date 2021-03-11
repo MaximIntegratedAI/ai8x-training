@@ -510,7 +510,7 @@ def main():
             compression_scheduler.on_epoch_end(epoch, optimizer)
 
         if (args.ofa and (epoch >= ofa_policy['start_epoch']) and
-            ((epoch+1) % ofa_policy['validation_freq'] == 0)):
+                ((epoch+1) % ofa_policy['validation_freq'] == 0)):
             stage, level = get_ofa_training_stage(epoch, args.ofa_stage_transition_list)
             if args.name:
                 ofa_checkpoint_name = f'{args.name}_ofa_stg{stage}_lev{level}'
@@ -595,7 +595,8 @@ def create_ofa_kd_policy(model, compression_scheduler, epoch, next_state_start_e
     dlw = distiller.DistillationLossWeights(args.ofa_kd_params['distill_loss'],
                                             args.ofa_kd_params['student_loss'], 0)
     args.ofa_kd_policy = distiller.KnowledgeDistillationPolicy(model, teacher,
-        args.ofa_kd_params['temperature'], dlw)
+                                                               args.ofa_kd_params['temperature'],
+                                                               dlw)
     compression_scheduler.add_policy(args.ofa_kd_policy, starting_epoch=epoch,
                                      ending_epoch=next_state_start_epoch, frequency=1)
 
@@ -603,7 +604,7 @@ def create_ofa_kd_policy(model, compression_scheduler, epoch, next_state_start_e
     msglogger.info('\tStart Epoch: %d, End Epoch: %d', epoch, next_state_start_epoch)
     msglogger.info('\tTemperature: %s', args.ofa_kd_params['temperature'])
     msglogger.info('\tLoss Weights (distillation | student | teacher): %s',
-                ' | '.join(['{:.2f}'.format(val) for val in dlw]))
+                   ' | '.join(['{:.2f}'.format(val) for val in dlw]))
 
 
 def train(train_loader, model, criterion, optimizer, epoch,
@@ -637,8 +638,7 @@ def train(train_loader, model, criterion, optimizer, epoch,
     if args.ofa:
         if args.ofa_stage_transition_list is not None:
             stage, level = get_ofa_training_stage(epoch, args.ofa_stage_transition_list)
-            prev_stage, _ = get_ofa_training_stage(epoch-1,
-                args.ofa_stage_transition_list)
+            prev_stage, _ = get_ofa_training_stage(epoch-1, args.ofa_stage_transition_list)
         else:
             stage = prev_stage = 0
             level = 0
@@ -646,13 +646,14 @@ def train(train_loader, model, criterion, optimizer, epoch,
         if prev_stage != stage:
             if args.ofa_kd_params:
                 if ('teacher_model' not in args.ofa_kd_params) or \
-                    ('teacher_model' in args.ofa_kd_params and \
-                    args.ofa_kd_params['teacher_model'] == 'full_model' and prev_stage == 0):
+                    ('teacher_model' in args.ofa_kd_params and
+                     args.ofa_kd_params['teacher_model'] == 'full_model' and prev_stage == 0):
                     create_ofa_kd_policy(model, compression_scheduler, epoch, args.epochs, args)
                 elif 'teacher_model' in args.ofa_kd_params and \
-                    args.ofa_kd_params['teacher_model'] == 'prev_stage_model':
+                     args.ofa_kd_params['teacher_model'] == 'prev_stage_model':
                     next_stage_start_epoch = get_next_stage_start_epoch(epoch,
-                        args.ofa_stage_transition_list, args.epochs)
+                                                                        args.ofa_stage_transition_list,
+                                                                        args.epochs)
                     create_ofa_kd_policy(model, compression_scheduler, epoch,
                                          next_stage_start_epoch, args)
 
