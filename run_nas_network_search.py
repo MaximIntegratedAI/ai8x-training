@@ -19,8 +19,7 @@ import torch
 from torch.utils.data import DataLoader
 
 import ai8x
-from nas import parse_nas_yaml
-from nas import nas_utils
+from nas import nas_utils, parse_nas_yaml
 from nas.evo_search import EvolutionSearch
 
 
