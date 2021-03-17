@@ -81,16 +81,18 @@ def get_parser(model_names, dataset_names):
                           help='path to YAML file that defines the '
                                'QAT (quantization-aware training) policy')
 
-    ofa_args = parser.add_argument_group('Once For All Training Arguments')
-    ofa_args.add_argument('--ofa', action='store_true', default=False,
-                          help='enables OFA (once for all training) training')
-    ofa_args.add_argument('--ofa-policy', dest='ofa_policy', default='',
+    ofa_args = parser.add_argument_group('NAS Training Arguments')
+    ofa_args.add_argument('--nas', action='store_true', default=False,
+                          help='enables NAS (network architecture search) training')
+    ofa_args.add_argument('--nas-kd-resume-from', default='', type=str, metavar='PATH',
+                          help='path to checkpoint from which to load NAS teacher weights')
+    ofa_args.add_argument('--nas-policy', dest='nas_policy', default='',
                           help='path to YAML file that defines the '
-                               'OFA (once for all training) policy')
-    ofa_args.add_argument('--ofa-stage-transition-list', dest='ofa_stage_transition_list',
+                               'NAS (network architecture search) policy')
+    ofa_args.add_argument('--nas-stage-transition-list', dest='nas_stage_transition_list',
                           default=None, help='list of tuples to define epochs to change the '
-                                             'stages and levels of OFA sampling policy. '
-                                             'Use --ofa-policy option instead!')
+                                             'stages and levels of NAS sampling policy. '
+                                             'Use --nas-policy option instead!')
 
     optimizer_args = parser.add_argument_group('Optimizer Arguments')
     optimizer_args.add_argument('--optimizer', default='SGD',

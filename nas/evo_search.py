@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 
-import nas_utils
+from nas import nas_utils
 
 
 class EvolutionSearch:
@@ -159,7 +159,7 @@ class EvolutionSearch:
             print(f'\tDuration: {(t2_iter-t1_iter):.2f}secs.')
 
         print('\nBest Models:')
-        for i in range(min(5, num_parents)):
+        for i in range(min(10, num_parents)):
             print(f'  Top-{i}')
             print('\tArch:', parents[i][0])
             print('\tArch:', parents[i][1])

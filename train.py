@@ -108,13 +108,14 @@ from distiller.quantization.range_linear import PostTrainLinearQuantizer
 
 # pylint: enable=no-name-in-module
 import ai8x
-import ai8x_ofa
+import ai8x_nas
 import datasets
 import nnplot
-import parse_ofa_yaml
 import parse_qat_yaml
 import parsecmd
 import sample
+
+from nas import parse_nas_yaml
 
 # from range_linear_ai84 import PostTrainLinearQuantizerAI84
 
@@ -295,8 +296,8 @@ def main():
         if args.qat_policy.lower() != "none" else None
 
     # Get policy for once for all training policy
-    ofa_policy = parse_ofa_yaml.parse(args.ofa_policy) \
-        if args.ofa and args.ofa_policy.lower() != '' else None
+    nas_policy = parse_nas_yaml.parse(args.nas_policy) \
+        if args.nas and args.nas_policy.lower() != '' else None
 
     # We can optionally resume from a checkpoint
     optimizer = None
@@ -436,13 +437,20 @@ def main():
                         'to %d', start_epoch, ending_epoch)
         raise ValueError('Epochs parameter is too low. Nothing to do.')
 
-    if args.ofa:
-        assert isinstance(model, ai8x_ofa.OnceForAllModel), 'Model should implement ' \
-                                        'OnceForAllModel interface for OFA training!'
-        if ofa_policy:
-            args.ofa_stage_transition_list = create_ofa_training_stage_list(model, ofa_policy)
-            args.ofa_kd_params = ofa_policy['kd_params'] if 'kd_params' in ofa_policy else None
-            args.ofa_kd_policy = None
+    if args.nas:
+        assert isinstance(model, ai8x_nas.OnceForAllModel), 'Model should implement ' \
+                                        'OnceForAllModel interface for NAS training!'
+        if nas_policy:
+            args.nas_stage_transition_list = create_nas_training_stage_list(model, nas_policy)
+            args.nas_kd_params = nas_policy['kd_params'] if 'kd_params' in nas_policy else None
+            if args.nas_kd_resume_from == '':
+                args.nas_kd_policy = None
+            else:
+                next_stage_start_epoch = get_next_stage_start_epoch(start_epoch,
+                                                                    args.nas_stage_transition_list,
+                                                                    args.epochs)
+                create_nas_kd_policy(model, compression_scheduler, start_epoch,
+                                     next_stage_start_epoch, args)
 
     vloss = 10**6
     for epoch in range(start_epoch, ending_epoch):
@@ -472,10 +480,10 @@ def main():
                 msglogger.info(distiller.masks_sparsity_tbl_summary(model, compression_scheduler))
 
         # evaluate on validation set
-        if not args.ofa or (args.ofa and (epoch < ofa_policy['start_epoch'])) or \
-           (args.ofa and ((epoch+1) % ofa_policy['validation_freq'] == 0)):
+        if not args.nas or (args.nas and (epoch < nas_policy['start_epoch'])) or \
+           (args.nas and ((epoch+1) % nas_policy['validation_freq'] == 0)):
             with collectors_context(activations_collectors["valid"]) as collectors:
-                if args.ofa and (epoch >= ofa_policy['start_epoch']):
+                if args.nas and (epoch >= nas_policy['start_epoch']):
                     update_bn_stats(train_loader, model, args)
 
                 top1, top5, vloss = validate(val_loader, model, criterion, [pylogger], args, epoch,
@@ -509,16 +517,16 @@ def main():
         if compression_scheduler:
             compression_scheduler.on_epoch_end(epoch, optimizer)
 
-        if (args.ofa and (epoch >= ofa_policy['start_epoch']) and
-                ((epoch+1) % ofa_policy['validation_freq'] == 0)):
-            stage, level = get_ofa_training_stage(epoch, args.ofa_stage_transition_list)
+        if (args.nas and (epoch >= nas_policy['start_epoch']) and
+                ((epoch+1) % nas_policy['validation_freq'] == 0)):
+            stage, level = get_nas_training_stage(epoch, args.nas_stage_transition_list)
             if args.name:
-                ofa_checkpoint_name = f'{args.name}_ofa_stg{stage}_lev{level}'
+                nas_checkpoint_name = f'{args.name}_nas_stg{stage}_lev{level}'
             else:
-                ofa_checkpoint_name = f'ofa_stg{stage}_lev{level}'
+                nas_checkpoint_name = f'nas_stg{stage}_lev{level}'
             apputils.save_checkpoint(epoch, args.cnn, model, optimizer=optimizer,
                                      scheduler=compression_scheduler, extras=checkpoint_extras,
-                                     is_best=is_best, name=ofa_checkpoint_name,
+                                     is_best=is_best, name=nas_checkpoint_name,
                                      dir=msglogger.logdir)
 
     # Finally run results on the test set
@@ -589,20 +597,20 @@ def create_optimizer(model, args):
     return optimizer
 
 
-def create_ofa_kd_policy(model, compression_scheduler, epoch, next_state_start_epoch, args):
+def create_nas_kd_policy(model, compression_scheduler, epoch, next_state_start_epoch, args):
     """Create knowledge distillation policy for nas"""
     teacher = copy.deepcopy(model)
-    dlw = distiller.DistillationLossWeights(args.ofa_kd_params['distill_loss'],
-                                            args.ofa_kd_params['student_loss'], 0)
-    args.ofa_kd_policy = distiller.KnowledgeDistillationPolicy(model, teacher,
-                                                               args.ofa_kd_params['temperature'],
+    dlw = distiller.DistillationLossWeights(args.nas_kd_params['distill_loss'],
+                                            args.nas_kd_params['student_loss'], 0)
+    args.nas_kd_policy = distiller.KnowledgeDistillationPolicy(model, teacher,
+                                                               args.nas_kd_params['temperature'],
                                                                dlw)
-    compression_scheduler.add_policy(args.ofa_kd_policy, starting_epoch=epoch,
+    compression_scheduler.add_policy(args.nas_kd_policy, starting_epoch=epoch,
                                      ending_epoch=next_state_start_epoch, frequency=1)
 
     msglogger.info('\nStudent-Teacher knowledge distillation enabled for NAS:')
     msglogger.info('\tStart Epoch: %d, End Epoch: %d', epoch, next_state_start_epoch)
-    msglogger.info('\tTemperature: %s', args.ofa_kd_params['temperature'])
+    msglogger.info('\tTemperature: %s', args.nas_kd_params['temperature'])
     msglogger.info('\tLoss Weights (distillation | student | teacher): %s',
                    ' | '.join(['{:.2f}'.format(val) for val in dlw]))
 
@@ -635,25 +643,25 @@ def train(train_loader, model, criterion, optimizer, epoch,
     steps_per_epoch = (total_samples + batch_size - 1) // batch_size
     msglogger.info('Training epoch: %d samples (%d per mini-batch)', total_samples, batch_size)
 
-    if args.ofa:
-        if args.ofa_stage_transition_list is not None:
-            stage, level = get_ofa_training_stage(epoch, args.ofa_stage_transition_list)
-            prev_stage, _ = get_ofa_training_stage(epoch-1, args.ofa_stage_transition_list)
+    if args.nas:
+        if args.nas_stage_transition_list is not None:
+            stage, level = get_nas_training_stage(epoch, args.nas_stage_transition_list)
+            prev_stage, _ = get_nas_training_stage(epoch-1, args.nas_stage_transition_list)
         else:
             stage = prev_stage = 0
             level = 0
 
         if prev_stage != stage:
-            if args.ofa_kd_params:
-                if ('teacher_model' not in args.ofa_kd_params) or \
-                    ('teacher_model' in args.ofa_kd_params and
-                     args.ofa_kd_params['teacher_model'] == 'full_model' and prev_stage == 0):
-                    create_ofa_kd_policy(model, compression_scheduler, epoch, args.epochs, args)
-                elif 'teacher_model' in args.ofa_kd_params and \
-                     args.ofa_kd_params['teacher_model'] == 'prev_stage_model':
+            if args.nas_kd_params:
+                if ('teacher_model' not in args.nas_kd_params) or \
+                    ('teacher_model' in args.nas_kd_params and
+                     args.nas_kd_params['teacher_model'] == 'full_model' and prev_stage == 0):
+                    create_nas_kd_policy(model, compression_scheduler, epoch, args.epochs, args)
+                elif 'teacher_model' in args.nas_kd_params and \
+                     args.nas_kd_params['teacher_model'] == 'prev_stage_model':
                     next_stage_start_epoch = get_next_stage_start_epoch(
-                        epoch, args.ofa_stage_transition_list, args.epochs)
-                    create_ofa_kd_policy(model, compression_scheduler, epoch,
+                        epoch, args.nas_stage_transition_list, args.epochs)
+                    create_nas_kd_policy(model, compression_scheduler, epoch,
                                          next_stage_start_epoch, args)
 
     # Switch to train mode
@@ -665,24 +673,24 @@ def train(train_loader, model, criterion, optimizer, epoch,
         data_time.add(time.time() - end)
         inputs, target = inputs.to(args.device), target.to(args.device)
 
-        # Set OFA parameters if necessary
-        if args.ofa:
+        # Set nas parameters if necessary
+        if args.nas:
             if stage == 1:
-                ai8x_ofa.sample_subnet_kernel(model, level)
+                ai8x_nas.sample_subnet_kernel(model, level)
             elif stage == 2:
-                ai8x_ofa.sample_subnet_depth(model, level)
+                ai8x_nas.sample_subnet_depth(model, level)
             elif stage == 3:
-                ai8x_ofa.sample_subnet_width(model, level)
+                ai8x_nas.sample_subnet_width(model, level)
 
         # Execute the forward phase, compute the output and measure loss
         if compression_scheduler:
             compression_scheduler.on_minibatch_begin(epoch, train_step, steps_per_epoch, optimizer)
 
         if not hasattr(args, 'kd_policy') or args.kd_policy is None:
-            if not hasattr(args, 'ofa_kd_policy') or args.ofa_kd_policy is None:
+            if not hasattr(args, 'nas_kd_policy') or args.nas_kd_policy is None:
                 output = model(inputs)
             else:
-                output = args.ofa_kd_policy.forward(inputs)
+                output = args.nas_kd_policy.forward(inputs)
         else:
             output = args.kd_policy.forward(inputs)
 
@@ -727,14 +735,14 @@ def train(train_loader, model, criterion, optimizer, epoch,
         if compression_scheduler:
             compression_scheduler.on_minibatch_end(epoch, train_step, steps_per_epoch, optimizer)
 
-        # Reset OFA sampling wrt OFA stage if necessary
-        if args.ofa:
+        # Reset elastic sampling wrt NAS stage if necessary
+        if args.nas:
             if stage == 1:
-                ai8x_ofa.reset_kernel_sampling(model)
+                ai8x_nas.reset_kernel_sampling(model)
             elif stage == 2:
-                ai8x_ofa.reset_depth_sampling(model)
+                ai8x_nas.reset_depth_sampling(model)
             elif stage == 3:
-                ai8x_ofa.reset_width_sampling(model)
+                ai8x_nas.reset_width_sampling(model)
 
         # measure elapsed time
         batch_time.add(time.time() - end)
@@ -764,10 +772,10 @@ def train(train_loader, model, criterion, optimizer, epoch,
             for loss_name, meter in losses.items():
                 stats_dict[loss_name] = meter.mean
             stats_dict.update(errs)
-            if args.ofa:
-                stats_dict['OFA-Stage'] = stage
+            if args.nas:
+                stats_dict['NAS-Stage'] = stage
                 if stage != 0:
-                    stats_dict['OFA-Level'] = level
+                    stats_dict['NAS-Level'] = level
             stats_dict['LR'] = optimizer.param_groups[0]['lr']
             stats_dict['Time'] = batch_time.mean
             stats = ('Performance/Training/', stats_dict)
@@ -1339,48 +1347,48 @@ def greedy(model, criterion, _optimizer, loggers, args):
                                                           test_fn, train_fn)
 
 
-def create_ofa_training_stage_list(model, ofa_policy):
-    """Create list to define OFA stage transition epochs"""
+def create_nas_training_stage_list(model, nas_policy):
+    """Create list to define NAS stage transition epochs"""
     stage_transition_list = []
-    msglogger.info('Ofa Policy: %s', ofa_policy)
+    msglogger.info('NAS Policy: %s', nas_policy)
 
-    stage_transition_list.append((ofa_policy['start_epoch'], 0, 0))
+    stage_transition_list.append((nas_policy['start_epoch'], 0, 0))
 
     max_kernel_level = model.get_max_elastic_kernel_level()
-    if ofa_policy['elastic_kernel']['leveling']:
+    if nas_policy['elastic_kernel']['leveling']:
         for level in range(max_kernel_level):
             stage_transition_list.append((stage_transition_list[-1][0] +
-                                          ofa_policy['elastic_kernel']['num_epochs'], 1, level+1))
+                                          nas_policy['elastic_kernel']['num_epochs'], 1, level+1))
     else:
         stage_transition_list.append((stage_transition_list[-1][0] +
-                                      ofa_policy['elastic_kernel']['num_epochs'], 1,
+                                      nas_policy['elastic_kernel']['num_epochs'], 1,
                                       max_kernel_level))
 
     max_depth_level = model.get_max_elastic_depth_level()
-    if ofa_policy['elastic_depth']['leveling']:
+    if nas_policy['elastic_depth']['leveling']:
         for level in range(max_depth_level):
             stage_transition_list.append((stage_transition_list[-1][0] +
-                                          ofa_policy['elastic_depth']['num_epochs'], 2, level+1))
+                                          nas_policy['elastic_depth']['num_epochs'], 2, level+1))
     else:
         stage_transition_list.append((stage_transition_list[-1][0] +
-                                      ofa_policy['elastic_depth']['num_epochs'], 2,
+                                      nas_policy['elastic_depth']['num_epochs'], 2,
                                       max_depth_level))
 
     max_width_level = model.get_max_elastic_width_level()
-    if ofa_policy['elastic_width']['leveling']:
+    if nas_policy['elastic_width']['leveling']:
         for level in range(max_width_level):
             stage_transition_list.append((stage_transition_list[-1][0] +
-                                          ofa_policy['elastic_width']['num_epochs'], 3, level+1))
+                                          nas_policy['elastic_width']['num_epochs'], 3, level+1))
     else:
         stage_transition_list.append((stage_transition_list[-1][0] +
-                                      ofa_policy['elastic_width']['num_epochs'], 3,
+                                      nas_policy['elastic_width']['num_epochs'], 3,
                                       max_width_level))
 
     return stage_transition_list
 
 
-def get_ofa_training_stage(epoch, stage_transition_list):
-    """Returns current stage of OFA"""
+def get_nas_training_stage(epoch, stage_transition_list):
+    """Returns current stage of NAS"""
     for t in stage_transition_list:
         if epoch < t[0]:
             break
