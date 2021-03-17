@@ -10,10 +10,11 @@
 """Plots the losses from the given log file"""
 
 import argparse
-import numpy as np
 import os
+import numpy as np
 
 import matplotlib.pyplot as plt
+
 
 def get_log_file(log_file_dir):
     """Returns the path of the log file in the given log directory"""
@@ -68,7 +69,7 @@ def prepare_loss_plot():
                 if cur_line == 'Parameters:\n':
                     epoch_start_idx = training_info_line.find('Epoch: [') + 8
                     epoch_end_idx = epoch_start_idx + \
-                                    training_info_line[epoch_start_idx:].find(']')
+                        training_info_line[epoch_start_idx:].find(']')
                     epoch = int(training_info_line[epoch_start_idx:epoch_end_idx])
                     if epoch in epoch_list:
                         idx = epoch_list.index(epoch)
@@ -82,18 +83,18 @@ def prepare_loss_plot():
 
                     batch_size_start_idx = training_info_line.find('/') + 2
                     batch_size_end_idx = batch_size_start_idx + \
-                                         training_info_line[batch_size_start_idx:].find(']')
+                        training_info_line[batch_size_start_idx:].find(']')
                     batch_size = int(training_info_line[batch_size_start_idx:batch_size_end_idx])
 
                     tr_loss_start_idx = training_info_line.find('Objective Loss') + 15
                     tr_loss_end_idx = tr_loss_start_idx + \
-                                      training_info_line[tr_loss_start_idx:].find('    ')
+                        training_info_line[tr_loss_start_idx:].find('    ')
                     tr_loss = float(training_info_line[tr_loss_start_idx:tr_loss_end_idx])
                     tr_loss_list.append(tr_loss)
 
                     tr_time_start_idx = training_info_line.find('Time') + 5
                     tr_time_end_idx = tr_time_start_idx + \
-                                      training_info_line[tr_time_start_idx:].find('    ')
+                        training_info_line[tr_time_start_idx:].find('    ')
                     tr_time = float(training_info_line[tr_time_start_idx:tr_time_end_idx])
                     if len(tr_time_list) == 0:
                         tr_time_list.append(batch_size*tr_time/3600)
@@ -122,7 +123,6 @@ def prepare_loss_plot():
 
     def forward(x):
         return np.interp(x, epoch_list, tr_time_list)
-
 
     def inverse(x):
         return np.interp(x, tr_time_list, epoch_list)

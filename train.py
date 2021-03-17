@@ -114,7 +114,6 @@ import nnplot
 import parse_qat_yaml
 import parsecmd
 import sample
-
 from nas import parse_nas_yaml
 
 # from range_linear_ai84 import PostTrainLinearQuantizerAI84
