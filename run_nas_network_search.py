@@ -18,8 +18,8 @@ from pydoc import locate
 import torch
 from torch.utils.data import DataLoader
 
-import ai8x   # pylint: disable=wrong-import-position
-from nas import parse_nas_yaml  # pylint: disable=wrong-import-position
+import ai8x
+from nas import parse_nas_yaml
 from nas import nas_utils
 from nas.evo_search import EvolutionSearch
 
