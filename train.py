@@ -445,11 +445,13 @@ def main():
             if args.nas_kd_resume_from == '':
                 args.nas_kd_policy = None
             else:
-                next_stage_start_epoch = get_next_stage_start_epoch(start_epoch,
-                                                                    args.nas_stage_transition_list,
-                                                                    args.epochs)
-                create_nas_kd_policy(model, compression_scheduler, start_epoch,
-                                     next_stage_start_epoch, args)
+                if args.nas_kd_params['teacher_model'] == 'full_model':
+                    kd_end_epoch = args.epochs
+                else:
+                    kd_end_epoch = get_next_stage_start_epoch(start_epoch,
+                                                              args.nas_stage_transition_list,
+                                                              args.epochs)
+                create_nas_kd_policy(model, compression_scheduler, start_epoch, kd_end_epoch, args)
 
     vloss = 10**6
     for epoch in range(start_epoch, ending_epoch):
@@ -479,12 +481,23 @@ def main():
                 msglogger.info(distiller.masks_sparsity_tbl_summary(model, compression_scheduler))
 
         # evaluate on validation set
-        if not args.nas or (args.nas and (epoch < nas_policy['start_epoch'])) or \
-           (args.nas and ((epoch+1) % nas_policy['validation_freq'] == 0)):
-            with collectors_context(activations_collectors["valid"]) as collectors:
-                if args.nas and (epoch >= nas_policy['start_epoch']):
-                    update_bn_stats(train_loader, model, args)
+        run_validation = not args.nas or (args.nas and (epoch < nas_policy['start_epoch']))
+        run_nas_validation = args.nas and (epoch >= nas_policy['start_epoch']) and \
+            ((epoch+1) % nas_policy['validation_freq'] == 0)
 
+        if run_validation or run_nas_validation:
+            checkpoint_name = args.name
+
+            # run pre validation steps if NAS is running
+            if run_nas_validation:
+                update_bn_stats(train_loader, model, args)
+                stage, level = get_nas_training_stage(epoch, args.nas_stage_transition_list)
+                if args.name:
+                    checkpoint_name = f'{args.name}_nas_stg{stage}_lev{level}'
+                else:
+                    checkpoint_name = f'nas_stg{stage}_lev{level}'
+
+            with collectors_context(activations_collectors["valid"]) as collectors:
                 top1, top5, vloss = validate(val_loader, model, criterion, [pylogger], args, epoch,
                                              tflogger)
                 distiller.log_activation_statistics(epoch, "valid", loggers=all_tbloggers,
@@ -505,28 +518,22 @@ def main():
             update_training_scores_history(perf_scores_history, model, top1, top5, epoch, args)
 
             # Save the checkpoint
-            is_best = epoch == perf_scores_history[0].epoch
-            checkpoint_extras = {'current_top1': top1,
-                                 'best_top1': perf_scores_history[0].top1,
-                                 'best_epoch': perf_scores_history[0].epoch}
+            if run_validation:
+                is_best = epoch == perf_scores_history[0].epoch
+                checkpoint_extras = {'current_top1': top1,
+                                     'best_top1': perf_scores_history[0].top1,
+                                     'best_epoch': perf_scores_history[0].epoch}
+            else:
+                is_best = False
+                checkpoint_extras = {'current_top1': top1}
+
             apputils.save_checkpoint(epoch, args.cnn, model, optimizer=optimizer,
                                      scheduler=compression_scheduler, extras=checkpoint_extras,
-                                     is_best=is_best, name=args.name, dir=msglogger.logdir)
+                                     is_best=is_best, name=checkpoint_name,
+                                     dir=msglogger.logdir)
 
         if compression_scheduler:
             compression_scheduler.on_epoch_end(epoch, optimizer)
-
-        if (args.nas and (epoch >= nas_policy['start_epoch']) and
-                ((epoch+1) % nas_policy['validation_freq'] == 0)):
-            stage, level = get_nas_training_stage(epoch, args.nas_stage_transition_list)
-            if args.name:
-                nas_checkpoint_name = f'{args.name}_nas_stg{stage}_lev{level}'
-            else:
-                nas_checkpoint_name = f'nas_stg{stage}_lev{level}'
-            apputils.save_checkpoint(epoch, args.cnn, model, optimizer=optimizer,
-                                     scheduler=compression_scheduler, extras=checkpoint_extras,
-                                     is_best=is_best, name=nas_checkpoint_name,
-                                     dir=msglogger.logdir)
 
     # Finally run results on the test set
     test(test_loader, model, criterion, [pylogger], activations_collectors, args=args)
@@ -1398,7 +1405,6 @@ def get_nas_training_stage(epoch, stage_transition_list):
 def get_next_stage_start_epoch(epoch, stage_transition_list, num_epochs):
     """Returns the starting epoch of the following stage"""
     current_stage = None
-    print(stage_transition_list, epoch)
     for stg_idx, t in enumerate(stage_transition_list):
         if epoch < t[0]:
             if current_stage is None:
