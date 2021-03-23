@@ -79,6 +79,12 @@ class EvolutionSearch:
             if self.model.__class__.get_num_weights(sample) < constraint['min_num_weights']:
                 return False
 
+        if 'width_options' in constraint:
+            unique_widths = self.model.__class__.get_unique_widths(sample)
+            for width in unique_widths:
+                if width not in constraint['width_options']:
+                    return False
+
         return True
 
     def run(self, constraint, train_loader, test_loader, device):

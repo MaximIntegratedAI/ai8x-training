@@ -100,7 +100,7 @@ class OnceForAllSequentialUnit(nn.Module):
         """Resets width sampling"""
         pass  # pylint: disable=unnecessary-pass
 
-    def forward(self, x):
+    def forward(self, x):  # pylint: disable=arguments-differ
         """Forward prop"""
         for l_idx in range(self.depth):
             x = self.layers[l_idx](x)
@@ -494,6 +494,8 @@ class OnceForAllSequentialModel(nn.Module):
                     kernel_list[unit_idx].append(random.choice(
                         [model1['kernel_list'][unit_idx][d], model2['kernel_list'][unit_idx][d]]))
 
+        width_list[-1][-1] = model1['width_list'][-1][-1]
+
         new_model_arch = {'num_classes': model1['num_classes'],
                           'num_channels': model1['num_channels'],
                           'dimensions': model1['dimensions'], 'bias': model1['bias'],
@@ -502,6 +504,18 @@ class OnceForAllSequentialModel(nn.Module):
                           'width_list': width_list, 'kernel_list': kernel_list}
 
         return new_model_arch
+
+    @staticmethod
+    def get_unique_widths(sample):
+        """Returns unique number of channel list of all layers in the model"""
+        unique_widths = []
+        for unit_idx, _ in enumerate(sample['width_list']):
+            for layer_idx, _ in enumerate(sample['width_list'][unit_idx]):
+                width = sample['width_list'][unit_idx][layer_idx]
+                if width not in unique_widths:
+                    unique_widths.append(width)
+
+        return unique_widths
 
 
 class OnceForAll2DSequentialModel(OnceForAllSequentialModel):
