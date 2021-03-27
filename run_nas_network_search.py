@@ -12,6 +12,7 @@ Application to run evolutionary search over trained Once For All model.
 
 import argparse
 import fnmatch
+import json
 import os
 from pydoc import locate
 
@@ -40,10 +41,15 @@ def parse_args(model_names, dataset_names):
     parser.add_argument('--no-bias', action='store_true', default=False,
                         help='for models that support both bias and no bias, set the '
                              '`use bias` flag to true')
-
     parser.add_argument('--nas-policy', dest='nas_policy', required=True,
                         help='path to YAML file that defines the NAS '
                              '(once for all training) policy')
+    parser.add_argument('--num-out-archs', default=1, type=int,
+                        help='number of subnet architectures at the output')
+    parser.add_argument('--export-archs', action='store_true', default=False,
+                        help='exports found subnets to a json file if set to True')
+    parser.add_argument('--arch-file', help='filepath where the json file is stores '
+                                            'if `export-archs` is set True')
 
     return parser.parse_args()
 
@@ -146,7 +152,47 @@ def create_model(supported_models, args):
                       dimensions=(args.dimensions[1], args.dimensions[2]),
                       bias=not args.no_bias).to(args.device)
 
+    if '2D' in type(model).__name__:
+        args.model_type = 'Conv2d'
+    elif '1D' in type(model).__name__:
+        args.model_type = 'Conv1d'
+    else:
+        args.model_type = 'Unknown'
+
     return model
+
+
+def generate_out_file(arch_list, num_elems, in_shape, model_type, file_path):
+    """Generates json file for the found subnet architectures"""
+    file_content = []
+    for idx in range(num_elems):
+        arch = arch_list[idx][0]
+        acc = arch_list[idx][1]
+
+        bias_list = []
+        for unit_idx in range(arch['n_units']):
+            bias = []
+            for _ in range(arch['depth_list'][unit_idx]):
+                bias.append(arch['bias'])
+            bias_list.append(bias)
+
+        arch_dict = {
+            'acc': acc,
+            'type': model_type,
+            'in_shape': in_shape,
+            'out_class': arch['num_classes'],
+            'n_units': arch['n_units'],
+            'depth_list': arch['depth_list'],
+            'width_list': arch['width_list'],
+            'kernel_list': arch['kernel_list'],
+            'bias_list': bias_list,
+            'bn': arch['bn']
+        }
+
+        file_content.append(arch_dict)
+
+    with open(file_path, 'w') as fp:
+        json.dump(file_content, fp, indent=4)
 
 
 def main():
@@ -186,9 +232,17 @@ def main():
                                  ratio_parent=evo_search_params['ratio_parent'],
                                  num_iter=evo_search_params['num_iter'])
     evo_search.set_model(model)
-    best_arch, best_acc = evo_search.run(evo_search_params['constraints'], train_loader,
-                                         val_loader, args.device)
-    print(best_arch, best_acc)
+    arch_list = evo_search.run(evo_search_params['constraints'], train_loader,
+                               val_loader, args.device)
+
+    if args.export_archs:
+        generate_out_file(arch_list, min(args.num_out_archs, len(arch_list)),
+                          args.dimensions, args.model_type, args.arch_file)
+    else:
+        for idx in range(min(args.num_out_archs, len(arch_list))):
+            print(f'Model-{idx}:')
+            print(f'\tArch: {arch_list[idx][0]}')
+            print(f'\tAcc: {arch_list[idx][1]}\n')
 
 
 if __name__ == '__main__':

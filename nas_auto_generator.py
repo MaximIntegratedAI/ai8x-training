@@ -69,7 +69,7 @@ class AutoGen:
         self.write_line('import ai8x')
         self.write_line('')
         self.write_line('')
-        self.write_line(f'class {self.model_name.upper()}(nn.Module)')
+        self.write_line(f'class {self.model_name.upper()}(nn.Module):')
         self.write_line('')
         self.write_line(ind+'def __init__(')
         self.write_line(3*ind+'self,')

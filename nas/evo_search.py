@@ -164,10 +164,10 @@ class EvolutionSearch:
             print(f'\tBest Model: {best_arch}')
             print(f'\tDuration: {(t2_iter-t1_iter):.2f}secs.')
 
-        print('\nBest Models:')
-        for i in range(min(10, num_parents)):
-            print(f'  Top-{i}')
-            print('\tArch:', parents[i][0])
-            print('\tArch:', parents[i][1])
+        # print('\nBest Models:')
+        # for i in range(min(10, num_parents)):
+        #     print(f'  Top-{i}')
+        #     print('\tArch:', parents[i][0])
+        #     print('\tArch:', parents[i][1])
 
-        return best_arch, best_acc
+        return parents
