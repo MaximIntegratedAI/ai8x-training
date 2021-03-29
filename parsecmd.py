@@ -204,9 +204,12 @@ def get_parser(model_names, dataset_names):
     parser.add_argument('--pr-curves', dest='display_prcurves', default=False,
                         action='store_true',
                         help='Display the precision-recall curves')
-    parser.add_argument('--no-tensorboard', dest='tblog', default=True,
-                        action='store_false',
-                        help='Disable TensorBoard')
+    mgroup = parser.add_mutually_exclusive_group()
+    mgroup.add_argument('--no-tensorboard', default=True, action='store_false',
+                        help='Disable TensorBoard (default)')
+    mgroup.add_argument('--enable-tensorboard', '--tensorboard', dest='tblog', default=False,
+                        action='store_true',
+                        help='Enable TensorBoard')
     parser.add_argument('--regression', dest='regression', default=False,
                         action='store_true',
                         help='Force regression output')

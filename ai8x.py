@@ -284,9 +284,14 @@ class OutputShift(nn.Module):
     """
     Calculate the clamped output shift when adjusting during quantization-aware training.
     """
+    def __init__(self, shift_quantile=1.0):
+        super().__init__()
+        self.shift_quantile = shift_quantile
+
     def forward(self, x, _):  # pylint: disable=arguments-differ, no-self-use
         """Forward prop"""
-        return -(1./x.abs().max()).log2().ceil().clamp(min=-15., max=15.)
+        limit = torch.quantile(x.abs(), self.shift_quantile)
+        return -(1./limit).log2().floor().clamp(min=-15., max=15.)
 
 
 class One(nn.Module):
@@ -362,6 +367,7 @@ class QuantizationAwareModule(nn.Module):
             op=None,
             func=None,
             bn=None,
+            shift_quantile=None
     ):
         super().__init__()
 
@@ -391,9 +397,9 @@ class QuantizationAwareModule(nn.Module):
         self.pooling = pooling
 
         self.output_shift = nn.Parameter(torch.Tensor([0.]), requires_grad=False)
-        self.init_module(weight_bits, bias_bits, quantize_activation)
+        self.init_module(weight_bits, bias_bits, quantize_activation, shift_quantile)
 
-    def init_module(self, weight_bits, bias_bits, quantize_activation):
+    def init_module(self, weight_bits, bias_bits, quantize_activation, shift_quantile):
         """Initialize model parameters"""
         if weight_bits is None and bias_bits is None and not quantize_activation:
             self.weight_bits = nn.Parameter(torch.Tensor([0]), requires_grad=False)
@@ -411,12 +417,13 @@ class QuantizationAwareModule(nn.Module):
                           f'bias_bits: {bias_bits}, ' \
                           f'quantize_activation: {quantize_activation}'
 
+        self.shift_quantile = shift_quantile
         self.set_functions()
 
     def set_functions(self):
         """Set functions to be used wrt the model parameters"""
         if self.adjust_output_shift.detach():
-            self.calc_out_shift = OutputShift()
+            self.calc_out_shift = OutputShift(self.shift_quantile)
             self.calc_weight_scale = WeightScale()
         else:
             self.calc_out_shift = OutputShiftSqueeze()
@@ -438,7 +445,13 @@ class QuantizationAwareModule(nn.Module):
         if self.pool is not None:
             x = self.clamp_pool(self.quantize_pool(self.pool(x)))
         if self.op is not None:
-            out_shift = self.calc_out_shift(self.op.weight.detach(), self.output_shift.detach())
+            if self.op.bias is not None:
+                bias_r = torch.flatten(self.op.bias.detach())
+                weight_r = torch.flatten(self.op.weight.detach())
+                params_r = torch.cat((weight_r, bias_r))
+            else:
+                params_r = torch.flatten(self.op.weight.detach())
+            out_shift = self.calc_out_shift(params_r, self.output_shift.detach())
             weight_scale = self.calc_weight_scale(out_shift)
             out_scale = self.calc_out_scale(out_shift)
 
@@ -598,7 +611,9 @@ class FusedMaxPoolConv2dBN(FusedMaxPoolConv2d):
     Fused 2D Max Pool, 2D Convolution, BatchNorm and Activation ('ReLU', 'Abs', None)
     """
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, batchnorm='Affine', **kwargs)
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
 
 
 class FusedMaxPoolConv2dReLU(FusedMaxPoolConv2d):
@@ -614,7 +629,9 @@ class FusedMaxPoolConv2dBNReLU(FusedMaxPoolConv2dReLU):
     Fused 2D Max Pool, 2D Convolution, BatchNorm and ReLU
     """
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, batchnorm='Affine', **kwargs)
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
 
 
 class FusedMaxPoolConv2dAbs(FusedMaxPoolConv2d):
@@ -630,7 +647,9 @@ class FusedMaxPoolConv2dBNAbs(FusedMaxPoolConv2dAbs):
     Fused 2D Max Pool, 2D Convolution, BatchNorm and Abs
     """
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, batchnorm='Affine', **kwargs)
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
 
 
 class MaxPool2d(FusedMaxPoolConv2d):
@@ -663,7 +682,9 @@ class FusedAvgPoolConv2dBNReLU(FusedAvgPoolConv2dReLU):
     Fused 2D Avg Pool, 2D Convolution, BatchNorm and ReLU
     """
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, batchnorm='Affine', **kwargs)
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
 
 
 class FusedAvgPoolConv2dAbs(FusedAvgPoolConv2d):
@@ -679,7 +700,9 @@ class FusedAvgPoolConv2dBNAbs(FusedAvgPoolConv2dAbs):
     Fused 2D Avg Pool, 2D Convolution, BatchNorm and Abs
     """
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, batchnorm='Affine', **kwargs)
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
 
 
 class AvgPool2d(FusedAvgPoolConv2d):
@@ -699,12 +722,24 @@ class FusedConv2dReLU(Conv2d):
         super().__init__(*args, activation='ReLU', **kwargs)
 
 
+class FusedConv2dBN(Conv2d):
+    """
+    Fused 2D Convolution and BatchNorm
+    """
+    def __init__(self, *args, **kwargs):
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
+
+
 class FusedConv2dBNReLU(FusedConv2dReLU):
     """
     Fused 2D Convolution and BatchNorm and ReLU
     """
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, batchnorm='Affine', **kwargs)
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
 
 
 class FusedConv2dAbs(Conv2d):
@@ -991,7 +1026,9 @@ class FusedMaxPoolConv1dBN(FusedMaxPoolConv1d):
     Fused 1D Max Pool, 1D Convolution, BatchNorm and Activation ('ReLU', 'Abs', None)
     """
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, batchnorm='Affine', **kwargs)
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
 
 
 class FusedMaxPoolConv1dReLU(FusedMaxPoolConv1d):
@@ -1007,10 +1044,9 @@ class FusedMaxPoolConv1dBNReLU(FusedMaxPoolConv1dReLU):
     Fused 1D Max Pool, 1D Convolution, BatchNorm and ReLU
     """
     def __init__(self, *args, **kwargs):
-        if 'batchnorm' in kwargs:
-            super().__init__(*args, **kwargs)
-        else:
-            super().__init__(*args, batchnorm='Affine', **kwargs)
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
 
 
 class FusedMaxPoolConv1dAbs(FusedMaxPoolConv1d):
@@ -1026,10 +1062,9 @@ class FusedMaxPoolConv1dBNAbs(FusedMaxPoolConv1d):
     Fused 1D Max Pool, 1D Convolution, BatchNorm and Abs
     """
     def __init__(self, *args, **kwargs):
-        if 'batchnorm' in kwargs:
-            super().__init__(*args, **kwargs)
-        else:
-            super().__init__(*args, batchnorm='Affine', **kwargs)
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
 
 
 class MaxPool1d(FusedMaxPoolConv1d):
@@ -1062,10 +1097,9 @@ class FusedAvgPoolConv1dBNReLU(FusedAvgPoolConv1dReLU):
     Fused 1D Avg Pool, 1D Convolution, BatchNorm and ReLU
     """
     def __init__(self, *args, **kwargs):
-        if 'batchnorm' in kwargs:
-            super().__init__(*args, **kwargs)
-        else:
-            super().__init__(*args, batchnorm='Affine', **kwargs)
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
 
 
 class FusedAvgPoolConv1dAbs(FusedAvgPoolConv1d):
@@ -1081,7 +1115,9 @@ class FusedAvgPoolConv1dBNAbs(FusedAvgPoolConv1d):
     Fused 1D Avg Pool, 1D Convolution, BatchNorm and Abs
     """
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, batchnorm='Affine', **kwargs)
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
 
 
 class AvgPool1d(FusedAvgPoolConv1d):
@@ -1106,10 +1142,9 @@ class FusedConv1dBNReLU(FusedConv1dReLU):
     Fused 1D Convolution, BatchNorm and ReLU
     """
     def __init__(self, *args, **kwargs):
-        if 'batchnorm' in kwargs:
-            super().__init__(*args, **kwargs)
-        else:
-            super().__init__(*args, batchnorm='Affine', **kwargs)
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
 
 
 class FusedConv1dAbs(Conv1d):
@@ -1125,10 +1160,9 @@ class FusedConv1dBNAbs(FusedConv1dAbs):
     Fused 1D Convolution, BatchNorm and Abs
     """
     def __init__(self, *args, **kwargs):
-        if 'batchnorm' in kwargs:
-            super().__init__(*args, **kwargs)
-        else:
-            super().__init__(*args, batchnorm='Affine', **kwargs)
+        if 'batchnorm' not in kwargs:
+            kwargs['batchnorm'] = 'Affine'
+        super().__init__(*args, **kwargs)
 
 
 class Eltwise(nn.Module):
@@ -1332,11 +1366,20 @@ def initiate_qat(m, qat_policy):
         for attr_str in dir(m):
             target_attr = getattr(m, attr_str)
             if isinstance(target_attr, QuantizationAwareModule):
-                target_attr.init_module(qat_policy['weight_bits'], 8, True)
+                if 'shift_quantile' in qat_policy:
+                    target_attr.init_module(qat_policy['weight_bits'], 8,
+                                            True, qat_policy['shift_quantile'])
+                else:
+                    target_attr.init_module(qat_policy['weight_bits'], 8, True, 1.0)
                 if 'overrides' in qat_policy:
                     if attr_str in qat_policy['overrides']:
-                        target_attr.init_module(qat_policy['overrides'][attr_str]['weight_bits'],
-                                                8, True)
+                        weight_field = qat_policy['overrides'][attr_str]['weight_bits']
+                        if 'shift_quantile' in qat_policy:
+                            target_attr.init_module(weight_field, 8,
+                                                    True, qat_policy['shift_quantile'])
+                        else:
+                            target_attr.init_module(weight_field,
+                                                    8, True, 1.0)
 
                 setattr(m, attr_str, target_attr)
 

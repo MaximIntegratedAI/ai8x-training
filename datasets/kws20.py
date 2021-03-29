@@ -60,6 +60,7 @@ class KWS:
     download (bool, optional): If true, downloads the dataset from the internet and
         puts it in root directory. If dataset is already downloaded, it is not
         downloaded again.
+    save_unquantized (bool, optional): If true, folded but unquantized data is saved.
 
     """
 
@@ -74,17 +75,22 @@ class KWS:
                   'up': 30, 'visual': 31, 'wow': 32, 'yes': 33, 'zero': 34}
 
     def __init__(self, root, classes, d_type, t_type, transform=None, quantization_scheme=None,
-                 augmentation=None, download=False):
+                 augmentation=None, download=False, save_unquantized=False):
 
         self.root = root
         self.classes = classes
         self.d_type = d_type
         self.t_type = t_type
         self.transform = transform
-        self.data_file = 'dataset2.pt'
+        self.save_unquantized = save_unquantized
 
         self.__parse_quantization(quantization_scheme)
         self.__parse_augmentation(augmentation)
+
+        if not self.save_unquantized:
+            self.data_file = 'dataset2.pt'
+        else:
+            self.data_file = 'unquantized.pt'
 
         if download:
             self.__download()
@@ -116,6 +122,8 @@ class KWS:
             self.quantization = quantization_scheme
             if 'bits' not in self.quantization:
                 self.quantization['bits'] = 8
+            if self.quantization['bits'] == 0:
+                self.save_unquantized = True
             if 'compand' not in self.quantization:
                 self.quantization['compand'] = False
             elif 'mu' not in self.quantization:
@@ -132,7 +140,7 @@ class KWS:
                 print('No key `aug_num` in input augmentation dictionary! ',
                       'It is set to 0.')
                 self.augmentation['aug_num'] = 0
-            else:
+            elif self.augmentation['aug_num'] != 0:
                 if 'noise_var' not in augmentation:
                     print('No key `noise_var` in input augmentation dictionary! ',
                           'It is set to defaults: [Min: 0., Max: 1.]')
@@ -293,7 +301,8 @@ class KWS:
 
     def __getitem__(self, index):
         inp, target = self.data[index].type(torch.FloatTensor), int(self.targets[index])
-        inp /= 256
+        if not self.save_unquantized:
+            inp /= 256
         # print(inp)
         # print("Shape 1:", inp.shape)
         if self.transform is not None:
@@ -414,8 +423,12 @@ class KWS:
                 record_list = sorted(os.listdir(os.path.join(self.raw_folder, label)))
 
                 # dimension: row_length x number_of_rows
-                data_in = np.empty(((self.augmentation['aug_num'] + 1) * len(record_list), row_len,
-                                    num_rows), dtype=np.uint8)
+                if not self.save_unquantized:
+                    data_in = np.empty(((self.augmentation['aug_num'] + 1) * len(record_list),
+                                        row_len, num_rows), dtype=np.uint8)
+                else:
+                    data_in = np.empty(((self.augmentation['aug_num'] + 1) * len(record_list),
+                                        row_len, num_rows), dtype=np.float32)
                 data_type = np.empty(((self.augmentation['aug_num'] + 1) * len(record_list), 1),
                                      dtype=np.uint8)
                 # create data classes
@@ -453,11 +466,14 @@ class KWS:
                             audio_chunk = np.pad(audio_chunk, [0, row_len-audio_chunk.size])
                             # store input data after quantization
                             data_idx = (self.augmentation['aug_num'] + 1) * r + n_a
-                            data_in[data_idx, :, n_r] = \
-                                KWS.quantize_audio(audio_chunk,
-                                                   num_bits=self.quantization['bits'],
-                                                   compand=self.quantization['compand'],
-                                                   mu=self.quantization['mu'])
+                            if not self.save_unquantized:
+                                data_in[data_idx, :, n_r] = \
+                                    KWS.quantize_audio(audio_chunk,
+                                                       num_bits=self.quantization['bits'],
+                                                       compand=self.quantization['compand'],
+                                                       mu=self.quantization['mu'])
+                            else:
+                                data_in[data_idx, :, n_r] = audio_chunk
 
                 dur = time.time() - time_s
                 print('Done in %.3fsecs.' % dur)
@@ -569,6 +585,61 @@ def KWS_20_get_datasets(data, load_train=True, load_test=True):
     return KWS_get_datasets(data, load_train, load_test, num_classes=20)
 
 
+def KWS_get_unquantized_datasets(data, load_train=True, load_test=True, num_classes=6):
+    """
+    Load the folded 1D version of SpeechCom dataset without quantization and augmentation
+    """
+    (data_dir, args) = data
+
+    transform = None
+
+    if num_classes == 6:
+        classes = ['up', 'down', 'left', 'right', 'stop', 'go']
+    elif num_classes == 20:
+        classes = ['up', 'down', 'left', 'right', 'stop', 'go', 'yes', 'no', 'on', 'off', 'one',
+                   'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'zero']
+    elif num_classes == 35:
+        classes = ['backward', 'bed', 'bird', 'cat', 'dog', 'down',
+                   'eight', 'five', 'follow', 'forward', 'four', 'go',
+                   'happy', 'house', 'learn', 'left', 'marvin', 'nine',
+                   'no', 'off', 'on', 'one', 'right', 'seven',
+                   'sheila', 'six', 'stop', 'three', 'tree', 'two',
+                   'up', 'visual', 'wow', 'yes', 'zero']
+    else:
+        raise ValueError(f'Unsupported num_classes {num_classes}')
+
+    augmentation = {'aug_num': 0}
+    quantization_scheme = {'bits': 0}
+
+    if load_train:
+        train_dataset = KWS(root=data_dir, classes=classes, d_type='train',
+                            transform=transform, t_type='keyword',
+                            quantization_scheme=quantization_scheme,
+                            augmentation=augmentation, download=True)
+    else:
+        train_dataset = None
+
+    if load_test:
+        test_dataset = KWS(root=data_dir, classes=classes, d_type='test',
+                           transform=transform, t_type='keyword',
+                           quantization_scheme=quantization_scheme,
+                           augmentation=augmentation, download=True)
+
+        if args.truncate_testset:
+            test_dataset.data = test_dataset.data[:1]
+    else:
+        test_dataset = None
+
+    return train_dataset, test_dataset
+
+
+def KWS_35_get_unquantized_datasets(data, load_train=True, load_test=True):
+    """
+    Load the folded 1D version of unquantized SpeechCom dataset for 20 classes.
+    """
+    return KWS_get_unquantized_datasets(data, load_train, load_test, num_classes=35)
+
+
 datasets = [
     {
         'name': 'KWS',  # 6 keywords
@@ -583,5 +654,14 @@ datasets = [
         'output': (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20),
         'weight': (1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0.14),
         'loader': KWS_20_get_datasets,
+    },
+    {
+        'name': 'KWS_35_unquantized',  # 35 keywords
+        'input': (128, 128, 1),
+        'output': (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+                   21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34),
+        'weight': (1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
+        'loader': KWS_35_get_unquantized_datasets,
     },
 ]

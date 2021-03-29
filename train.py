@@ -465,6 +465,13 @@ def main():
             # Model is re-transferred to GPU in case parameters were added
             model.to(args.device)
 
+            # Empty the performance scores list for QAT operation
+            perf_scores_history = []
+            if args.name:
+                args.name = f'{args.name}_qat'
+            else:
+                args.name = 'qat'
+
         # This is the main training loop.
         msglogger.info('\n')
         if compression_scheduler:

@@ -1,6 +1,6 @@
 # MAX78000 Model Training and Synthesis
 
-_February 10, 2021_
+_March 18, 2021_
 
 The Maxim Integrated AI project is comprised of four repositories:
 
@@ -117,7 +117,7 @@ eval "$(pyenv init -)"
 eval "$(pyenv virtualenv-init -)"
 ```
 
-If you use zsh as the shell (default on macOS), add these same commands to  `~/.zshrc` in addition.
+If you use zsh as the shell (default on macOS), add these same commands to `~/.zprofile` or `~/.zshrc` in addition to adding them to the bash startup scripts.
 
 Next, close the Terminal, open a new Terminal and install Python 3.8.6.
 
@@ -157,7 +157,7 @@ For convenience, define a shell variable named `AI_PROJECT_ROOT`:
 $ export AI_PROJECT_ROOT="$HOME/Documents/Source/AI"
 ```
 
-Add this line to `~/.profile`.
+Add this line to `~/.profile` (and on macOS, to `~/.zprofile`).
 
 #### Nervana Distiller
 
@@ -204,7 +204,7 @@ Windows/MS-DOS is not supported for training networks at this time. *This includ
 
 ### Upstream Code
 
-Change to the project root and run the following commands. Use your GitHub credentials when prompted.
+Change to the project root and run the following commands. Use your GitHub credentials if prompted.
 
 ```shell
 $ cd $AI_PROJECT_ROOT
@@ -318,17 +318,21 @@ $ source bin/activate
 
 Branches and updates for `ai8x-synthesis` are handled similarly to the [`ai8x-training`](#Repository Branches) project.
 
+**Installation is now Complete**
+
+With the installation of Training and Synthesis projects completed it is important to remember to activate the proper Python virtual environment when switching between projects. If scripts begin failing in a previously working environment, the cause might be that the incorrect virtual environment is active or that no virtual environment has been activated.
+
 ### Embedded Software Development Kit (SDK)
 
 The MAX78000 SDK is a git submodule of ai8x-synthesis. It is checked out automatically to a version compatible with the project into the folder `sdk`.
 
-***If the embedded C compiler is run on Windows instead of Linux, ignore this section*** *and install the Maxim SDK executable, see https://github.com/MaximIntegratedAI/MaximAI_Documentation.*
+***If the embedded C compiler is run on Windows instead of Linux or macOS, ignore this section*** *and install the Maxim SDK executable, see https://github.com/MaximIntegratedAI/MaximAI_Documentation.*
 
-The Arm embedded compiler can be downloaded from [https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain/gnu-rm/downloads](https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain/gnu-rm/downloads).
+The Arm embedded compiler can be downloaded from [https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain/gnu-rm/downloads](https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain/gnu-rm/downloads). *The SDK has been tested with version 9-2019-q4-major of the embedded Arm compiler. Newer versions may or may not work correctly.*
 
-The RISC-V embedded compiler can be downloaded from [https://github.com/xpack-dev-tools/riscv-none-embed-gcc-xpack/releases/](https://github.com/xpack-dev-tools/riscv-none-embed-gcc-xpack/releases/).
+The RISC-V embedded compiler can be downloaded from [https://github.com/xpack-dev-tools/riscv-none-embed-gcc-xpack/releases/](https://github.com/xpack-dev-tools/riscv-none-embed-gcc-xpack/releases/). *The SDK has been tested with version 8.3.0-1.1 of the RISC-V embedded compiler. Newer versions may or may not work correctly.*
 
-Add the following to your `~/.profile`, adjusting for the actual `PATH` to the compilers:
+Add the following to your `~/.profile` (and on macOS, to `~/.zprofile`), adjusting for the actual `PATH` to the compilers:
 
 ```shell
 echo $PATH | grep -q -s "/usr/local/gcc-arm-none-eabi-9-2019-q4-major/bin"
@@ -417,6 +421,8 @@ As data is read using multiple passes, and all available processor work in paral
 For example, if 192-channel data is read using 64 active processors, Data Memory 0 stores three 32-bit words: channels 0, 1, 2, 3 in the first word, 64, 65, 66, 67 in the second word, and 128, 129, 130, 131 in the third word. Data Memory 1 stores channels 4, 5, 6, 7 in the first word, 68, 69, 70, 71 in the second word, and 132, 133, 134, 135 in the third word, and so on. The first processor processes channel 0 in the first pass, channel 64 in the second pass, and channel 128 in the third pass.
 
 *Note: Multi-pass also works with channel counts that are not a multiple of 64, and can be used with less than 64 active processors.*
+
+*Note: For all multi-pass cases, the processor count per pass is rounded up to the next multiple of 4.*
 
 ### Streaming Mode
 
@@ -605,13 +611,17 @@ $$ w_0 * w_1 = 128/128 → saturation → 01111111 (= 127/128) $$
 
 #### HWC
 
-All internal data are stored in HWC format, 4 channels per 32-bit word. Assuming 3-color (or 3-channel) input, one byte will be unused. Example:
+All internal data are stored in HWC format, 4 channels per 32-bit word. Assuming 3-color (or 3-channel) input, one byte will be unused. The highest frequency in this data format is the channel, so the channels are interleaved.
+
+Example:
 
 ![0BGR 0BGR 0 BGR 0BGR...](docs/HWC.png)
 
 #### CHW
 
-The input layer can alternatively also use the CHW format (sequence of channels), for example:
+The input layer can alternatively also use the CHW format (a sequence of channels). The highest frequency in this data format is the width or X-axis (W), and the lowest frequency is the channel. Assuming an RGB input, all red pixels are followed by all green pixels, followed by all blue pixels.
+
+Example:
 
 ![RRRRRR...GGGGGG...BBBBBB...](docs/CHW.png)
 
@@ -776,6 +786,8 @@ The `ai84net.py` and `ai85net.py` files contain models that fit into AI84’s we
 
 To train the FP32 model for MNIST on MAX78000, run `scripts/train_mnist.sh` from the `ai8x-training` project. This script will place checkpoint files into the log directory. Training makes use of the Distiller framework, but the `train.py` software has been modified slightly to improve it and add some MAX78000/MAX78002 specifics.
 
+Since training can take hours or days, the training script does not overwrite any weights previously produced. Results are placed in sub-directories under `logs/` named with date and time when training began. The latest results are always soft-linked to by `latest-log_dir` and `latest_log_file`.
+
 ### Command Line Arguments
 
 The following table describes the most important command line arguments for `train.py`. Use `--help` for a complete list.
@@ -786,7 +798,7 @@ The following table describes the most important command line arguments for `tra
 | *Device selection*         |                                                              |                                 |
 | `--device`                 | Set device (default: AI84)                                   | `--device MAX78000`             |
 | *Model and dataset*        |                                                              |                                 |
-| `-a`, `--arch`             | Set model (collected from models folder)                     | `--model ai85net5`              |
+| `-a`, `--arch`, `--model` | Set model (collected from models folder)                     | `--model ai85net5`              |
 | `--dataset`                | Set dataset (collected from datasets folder)                 | `--dataset MNIST`               |
 | `--data`                   | Path to dataset (default: data)                              | `--data /data/ml`               |
 | *Training*                 |                                                              |                                 |
@@ -800,6 +812,7 @@ The following table describes the most important command line arguments for `tra
 | `--nas`                    | Enable network architecture search                           |
 | `--nas-policy`             | Define NAS policy in YAML file                               | `--nas-policy nas/nas_policy.yaml`  |
 | *Display and statistics*   |                                                              |                                 |
+| `--enable-tensorboard` | Enable logging to TensorBoard (default: disabled) | |
 | `--confusion`              | Display the confusion matrix                                 |                                 |
 | `--param-hist`             | Collect parameter statistics                                 |                                 |
 | `--pr-curves`              | Generate precision-recall curves                             |                                 |
@@ -939,7 +952,7 @@ Both TensorBoard and Manifold can be used for model comparison and feature attri
 
 #### TensorBoard
 
-TensorBoard is built into `train.py`. It provides a local web server that can be started before, during, or after training and it picks up all data that is written to the `logs/` directory. 
+TensorBoard is built into `train.py`. When enabled using `--enable-tensorboard`, it provides a local web server that can be started before, during, or after training and it picks up all data that is written to the `logs/` directory. 
 
 For classification models, TensorBoard supports the optional `--param-hist` and `--embedding` command line arguments. `--embedding` randomly selects up to 100 data points from the last batch of each verification epoch. These can be viewed in the “projector” tab in TensorBoard.
 
@@ -1252,6 +1265,7 @@ The following table describes the most important command line arguments for `ai8
 | `--prefix`               | Set test name prefix                                         | `--prefix mnist`                |
 | `--board-name`           | Set the target board (default: `EvKit_V1`)                   | `--board-name FTHR_RevA`        |
 | *Code generation*        |                                                              |                                 |
+| `--overwrite`            | Produce output even when the target directory exists (default: abort) |                                 |
 | `--compact-data`         | Use *memcpy* to load input data in order to save code space  |                                 |
 | `--compact-weights`      | Use *memcpy* to load weights in order to save code space     |                                 |
 | `--mexpress`             | Use faster kernel loading                                    |                                 |
@@ -1309,6 +1323,10 @@ The following table describes the most important command line arguments for `ai8
 | `--ready-sel-aon`        | Specify AON waitstates                                       |                                 |
 
 ### YAML Network Description
+
+The [quick-start guide](https://github.com/MaximIntegratedAI/MaximAI_Documentation/blob/master/Guides/YAML%20Quickstart.md) provides a short overview of the purpose and structure of the YAML network description file.
+
+The following is a detailed guide into all supported configuration options.
 
 An example network description for the ai85net5 architecture and MNIST is shown below:
 
@@ -1398,7 +1416,7 @@ Data sets are for example `mnist`, `fashionmnist`, and `cifar-10`.
 
 ##### `output_map` (Optional)
 
-The global `output_map`, if specified, overrides the memory instances where the last layer outputs its results. If not specified, this will be either the `output_processors` specified for the last layer, or, if that key does not exist, default to the number of processors needed for the output channels, starting at 0.
+The global `output_map`, if specified, overrides the memory instances where the last layer outputs its results. If not specified, this will be either the `output_processors` specified for the last layer, or, if that key does not exist, default to the number of processors needed for the output channels, starting at 0. Please also see `output_processors`.
 
 Example:
 	`output_map: 0x0000000000000ff0`
@@ -1423,7 +1441,7 @@ This key allows overriding of the processing sequence. The default is `0` for th
 
 `processors` is specified as a 64-bit hexadecimal value. Dots (‘.’) and a leading ‘0x’ are ignored.
 
-*Note: When using multi-pass (i.e., using more than 64 channels), the number processors is an integer division of the channel count, rounded up. For example, 60 processors are specified for 120 channels.*
+*Note: When using multi-pass (i.e., using more than 64 channels), the number processors is an integer division of the channel count, rounded up to the next multiple of 4. For example, 52 processors are required for 100 channels (since 100 div 2 = 50, and 52 is the next multiple of 4). For best efficiency, use channel counts that are multiples of 4.*
 
 Example for three processors 0, 4, and 8:
 	 `processors: 0x0000.0000.0000.0111`
@@ -1505,7 +1523,7 @@ Example:
 
 ##### `activate` (Optional)
 
-This key describes whether to activate the layer output (the default is to not activate). When specified, this key must be `ReLU`, `Abs` or `None` (the default).
+This key describes whether to activate the layer output (the default is to not activate). When specified, this key must be `ReLU`, `Abs` or `None` (the default). *Please note that there is always an implicit non-linearity when outputting 8-bit data since outputs are clamped to $[–1, +127/128]$ during training.*
 
 Note that the output values are clipped (saturated) to $[0, +127]$. Because of this, `ReLU` behaves more similar to PyTorch’s `nn.Hardtanh(min_value=0, max_value=127)` than to PyTorch’s `nn.ReLU()`.
 
@@ -1543,13 +1561,9 @@ Example:
 
 ##### `kernel_size` (Optional)
 
-2D convolutions:
-
-​	This key must be `3x3` (the default) or `1x1`.
-
-1D convolutions:
-
-​	This key must be `1` through `9`.
+* For `Conv2D`, this key must be `3x3` (the default) or `1x1`.
+* For `Conv1D`, this key must be `1` through `9`.
+* For `ConvTranspose2D`, this key must be `3x3` (the default).
 
 Example:
 	`kernel_size: 1x1`
@@ -1564,6 +1578,7 @@ This key must be `1` or `[1, 1]`.
 
 * For `Conv2d`, this value can be `0`, `1` (the default), or `2`.
 * For `Conv1d`, the value can be `0`, `1`, `2`, or `3` (the default).
+* For `ConvTranspose2d`, this value can be `0`, `1` (the default), or `2`. *Note that the value follows PyTorch conventions and effectively adds* `(kernel_size – 1) – pad` *amount of zero padding to both sizes of the input, so “0” adds 2 zeros each and “2” adds no padding.*
 * For `Passthrough`, this value must be `0` (the default).
 
 ##### `max_pool` (Optional)
@@ -1645,7 +1660,7 @@ Example:
 
 For layers that use a bias, this key can specify one or more bias memories that should be used. By default, the software uses a “Fit First Descending (FFD)” allocation algorithm that considers largest bias lengths first, and then the layer number, and places each bias in the available group with the most available space, descending to the smallest bias length.
 
-“Available groups” is layer specific and is a list of the groups that have enabled processors for the respective layer. `bias_group` must reference one or more of the available groups. This check can be overridden using the command line option `--ignore-bias-groups` that allows any group or list of groups for any layer.
+“Available groups” is the complete list of groups used by the network (in any layer). `bias_group` must reference one or more of these available groups.
 
 `bias_group` can be a list of integers or a single integer.
 
@@ -2209,3 +2224,4 @@ https://github.com/MaximIntegratedAI/MaximAI_Documentation/blob/master/CONTRIBUT
 
 ---
 
+o
