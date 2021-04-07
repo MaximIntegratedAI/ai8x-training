@@ -1,0 +1,23 @@
+name: Regression Test Action
+
+on:
+  push:
+    branches-ignore: [master]
+  pull_request:
+    branches-ignore: [master]
+
+jobs:
+  Sanity_Check:
+    runs-on: ubuntu-latest
+    name: A job to run regression tests
+    steps:
+    # Checks out a copy of your repository on the ubuntu-latest machine
+    - name: Checkout code
+      uses: actions/checkout@v2
+      with:
+        submodules: recursive
+        ref: ${{ github.ref }}
+
+    - name: Run Regression Script step
+      id: regression_action
+      run: ".github/regression_test_scripts/regression_test_action.sh"
