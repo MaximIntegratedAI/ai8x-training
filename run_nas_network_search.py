@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 ###################################################################################################
 #
 # Copyright (C) Maxim Integrated Products, Inc. All Rights Reserved.
