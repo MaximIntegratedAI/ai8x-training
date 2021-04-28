@@ -15,6 +15,7 @@ import argparse
 import fnmatch
 import json
 import os
+import re
 from pydoc import locate
 
 import torch
@@ -163,6 +164,26 @@ def create_model(supported_models, args):
     return model
 
 
+def format_json_data(json_data):
+    """Converts the json file content to human readable format"""
+    json_data = re.sub(r'": \[\s+', '": [', json_data)
+    json_data = re.sub(r'": \[\[\s+', '": [[', json_data)
+    json_data = re.sub(r'\[\s+', '[', json_data)
+    json_data = re.sub(r'\n\s+\]', ']', json_data)
+    json_data = re.sub(r'\],\s+\[', '], [', json_data)
+    json_data = re.sub(r',\s+(\d)', r', \1', json_data)
+    json_data = re.sub(r'(\d),\s+(\d)', r'\1, \2', json_data)
+    json_data = re.sub(r'true,\s+true',  'true, true', json_data)
+    json_data = re.sub(r'true,\s+true]',  'true, true]', json_data)
+    json_data = re.sub(r'true,\s+false',  'true, false', json_data)
+    json_data = re.sub(r'true,\s+false]',  'true, false]', json_data)
+    json_data = re.sub(r'false,\s+true',  'false, true', json_data)
+    json_data = re.sub(r'false,\s+true]',  'false, true]', json_data)
+    json_data = re.sub(r'false,\s+false',  'false, false', json_data)
+    json_data = re.sub(r'false,\s+false]',  'false, false]', json_data)
+    return json_data
+
+
 def generate_out_file(arch_list, num_elems, in_shape, model_type, file_path):
     """Generates json file for the found subnet architectures"""
     file_content = []
@@ -192,8 +213,11 @@ def generate_out_file(arch_list, num_elems, in_shape, model_type, file_path):
 
         file_content.append(arch_dict)
 
+    json_file_content = json.dumps(file_content, indent=4)
+    json_file_content = format_json_data(json_file_content)
+
     with open(file_path, 'w') as fp:
-        json.dump(file_content, fp, indent=4)
+        fp.write(json_file_content)
 
 
 def main():
