@@ -61,7 +61,7 @@ def calc_efficiency(child_net_arch):  # pylint: disable=unused-argument
 def check_net_in_population(child_net, population):
     """Checks if a sub network is in the population"""
     for p in population:
-        if child_net == p:
+        if child_net == p[0]:
             return True
 
     return False

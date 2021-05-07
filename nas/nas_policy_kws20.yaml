@@ -23,4 +23,4 @@ evolution_search:
   constraints:
     min_num_weights: 300000
     max_num_weights: 420000
-    width_options: [32, 64, 128]
+    width_options: [64, 128]
