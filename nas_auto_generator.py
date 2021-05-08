@@ -100,20 +100,16 @@ class AutoGen:
                         raise ValueError
                     self.append_line(2*ind)
                     if l_idx == 0 and u_idx != 0:
-                        size1 = size1//2
-                        if size1 < 1:
-                            size1 = 1
+                        size1 = max(size1//2, 1)
                         if self.arch_dict['type'].lower() == 'conv2d':
-                            size2 = size2//2
-                            if size2 < 1:
-                                size2 = 1
+                            size2 = max(size2//2, 1)
                         self.append_line(f'self.conv{u_idx+1}_{l_idx+1} = {self.pool_layer}(' +
-                                        f'{last_ch}, {width}, {kernel}, stride=1, ' +
-                                        f'padding={pad}, bias=bias, ')
+                                         f'{last_ch}, {width}, {kernel}, stride=1, ' +
+                                         f'padding={pad}, bias=bias, ')
                     else:
                         self.append_line(f'self.conv{u_idx+1}_{l_idx+1} = {self.layer}(' +
-                                        f'{last_ch}, {width}, {kernel}, stride=1, ' +
-                                        f'padding={pad}, bias=bias, ')
+                                         f'{last_ch}, {width}, {kernel}, stride=1, ' +
+                                         f'padding={pad}, bias=bias, ')
                     if self.arch_dict['bn']:
                         self.append_line('batchnorm="NoAffine", ')
                     self.write_line('**kwargs)')
