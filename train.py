@@ -905,14 +905,14 @@ def _validate(data_loader, model, criterion, loggers, args, epoch=-1, tflogger=N
                     f.write(f'{args.labels[i.int()]}\n')
 
     if args.csv_prefix is not None:
-        f_ytrue = open(f'{args.csv_prefix}_ytrue.csv', 'w')
-        f_ytrue.write('truth\n')
-        f_ypred = open(f'{args.csv_prefix}_ypred.csv', 'w')
-        f_ypred.write(','.join(args.labels) + '\n')
-        f_x = open(f'{args.csv_prefix}_x.csv', 'w')
-        for i in range(args.dimensions[0]-1):
-            f_x.write(f'x_{i}_mean,')
-        f_x.write(f'x_{args.dimensions[0]-1}_mean\n')
+        with open(f'{args.csv_prefix}_ytrue.csv', 'w') as f_ytrue:
+            f_ytrue.write('truth\n')
+        with open(f'{args.csv_prefix}_ypred.csv', 'w') as f_ypred:
+            f_ypred.write(','.join(args.labels) + '\n')
+        with open(f'{args.csv_prefix}_x.csv', 'w') as f_x:
+            for i in range(args.dimensions[0]-1):
+                f_x.write(f'x_{i}_mean,')
+            f_x.write(f'x_{args.dimensions[0]-1}_mean\n')
 
     if args.earlyexit_thresholds:
         # for Early Exit, we have a list of errors and losses for each of the exits.

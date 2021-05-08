@@ -133,9 +133,8 @@ def main(source_path, dest_path):  # pylint: disable=too-many-locals
                     np.save(new_img_path, new_img)
                     embedding_dict[new_img_name] = embedding_list
         json_bin = json.dumps(embedding_dict)
-        out_file = open(os.path.join(prcssd_folder_path, "embeddings.json"), "w")
-        out_file.write(json_bin)
-        out_file.close()
+        with open(os.path.join(prcssd_folder_path, "embeddings.json"), "w") as out_file:
+            out_file.write(json_bin)
 
 
 def parse_args():
