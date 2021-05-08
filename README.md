@@ -1,6 +1,6 @@
 # MAX78000 Model Training and Synthesis
 
-_May 4, 2021_
+_May 7, 2021_
 
 The Maxim Integrated AI project is comprised of four repositories:
 
@@ -818,6 +818,7 @@ The MAX78000 hardware does not support arbitrary network parameters. Specificall
   * When using data greater than 90×91, `streaming` mode must be used.
   * When using `streaming` mode, the product of any layer’s input width, input height, and input channels divided by 64 rounded up must not exceed 2^21: $width * height * ⌈\frac{channels}{64}⌉ < 2^{21}$. _width_ and _height_ must not exceed 1023.
   * Streaming is limited to 8 layers or less, and is limited to four FIFOs (up to 4 input channels in CHW and up to 16 channels in HWC format), see [FIFOs](#FIFOs).
+  * For streaming layers, bias values may not be added correctly in all cases.
   
 * The weight memory supports up to 768 * 64 3×3 Q7 kernels (see [Number Format](#Number-Format)).
   When using 1-, 2- or 4 bit weights, the capacity increases accordingly.
@@ -1325,6 +1326,10 @@ The following table describes the most important command line arguments for `ai8
 | `--ready-sel`            | Specify memory waitstates                                    |                                 |
 | `--ready-sel-fifo`       | Specify FIFO waitstates                                      |                                 |
 | `--ready-sel-aon`        | Specify AON waitstates                                       |                                 |
+| Various                  |                                                              |                                 |
+| `--synthesize-input`     | Instead of using large sample input data, use only the first `--synthesize-words` words of the sample input, and add N to each subsequent set of `--synthesize-words` 32-bit words | `--synthesize-input 0x112233` |
+| `--synthesize-words` | When using `—synthesize-input`, specifies how many words to use from the input. The default is 8. This number must be a divisor of the total number of pixels per channel. | `--synthesize-words 64` |
+| `--max-checklines`       | Instead of checking all of the expected output data, verify only the first N words | `--max-checklines 1024`         |
 
 ### YAML Network Description
 
@@ -2042,7 +2047,57 @@ The generator also adds all files from the `assets/eclipse`, `assets/device-all`
 * For MAX78000/MAX78002, the software Softmax is implemented in `softmax.c`.
 * A template for the `cnn.h` header file in `templatecnn.h`. The template is customized during code generation using model statistics and timer, but uses common function signatures for all projects.
 
+#### Determining the Compiled Flash Image Size
 
+The generated `.elf` file (either `max78000.elf` or `max78000-combined.elf`) contains debug and other meta information. To determine the true Flash image size, either examine the `.map` file, or convert the `.elf` to a binary image and examine the resulting image.
+
+```shell
+% arm-none-eabi-objcopy -I elf32-littlearm build/max78000.elf -O binary temp.bin                     
+% ls -la temp.bin
+-rwxr-xr-x  1 user  staff  321968 Jan  1 11:11 temp.bin
+```
+
+#### Handling Linker Flash Section Overflows
+
+When linking the generated C code, the code space might overflow:
+
+```shell
+$ make
+  CC    main.c
+  CC    cnn.c
+  ...
+  LD    build/max78000.elf 
+arm-none-eabi/bin/ld: build/max78000.elf section `.text' will not fit in region `FLASH'
+arm-none-eabi/bin/ld: region `FLASH' overflowed by 600176 bytes
+collect2: error: ld returned 1 exit status
+```
+
+The most likely reason is that the input is too large (from `sampledata.h`), or that the expected output is too large. It is important to note that this only affects the generated code with the built-in known-answer test (KAT) that will not be part of the user application since normal input and output data are not predefined in Flash memory.
+
+To deal with this issue, there are several options:
+
+* The sample input data can be stored in external memory. This requires modifications to the generated code. Please see the SDK examples to learn how to access external memory.
+* The sample input data can be programmatically generated. Typically, this requires manual modification of the generated code, and a corresponding modification of the sample input file.
+  The generator also contains a built-in generator (supported *only* when using `—fifo`, and only for HWC inputs); the command line option `--synthesize-input` uses only the first few words of the sample input data, and then adds the specified value N (for example, 0x112233 if three input channels are used) to each subsequent set of M 32-bit words. M can be specified using `--synthesize-words` and defaults to 8. Note that M must be a divisor of the number of pixels per channel.
+* The output check can be truncated. The command line option `--max-checklines` checks only the first N words of output data (for example, 1024).
+* For 8-bit output values, `--mlator` typically generates more compact code.
+* Change the compiler optimization level in `Makefile`. To change the default optimization levels, modify `MXC_OPTIMIZE_CFLAGS` in `assets/embedded-ai85/templateMakefile` for Arm code and  `assets/embedded-riscv-ai85/templateMakefile.RISCV` for RISC-V code. Both `-O1` and `-Os` may result in smaller code compared to `-O2`.
+* If the last layer has large-dimension, large-channel output, the `cnn_unload()` code in `cnn.c` may cause memory segment overflows not only in Flash, but also in the target buffer in SRAM (`ml_data32[]` or `ml_data[]` in `main.c`). In this case, manual code edits are required to perform multiple partial unloads in sequence.
+
+#### Debugging Techniques
+
+There can be many reasons why the known-answer test (KAT) fails for a given network. The following techniques may help in narrowing down where in the network or the YAML description of the network the error occurs:
+
+* The default compiler optimization level is `-O2`, and incorrect code may be generated under rare circumstances. Lower the optimization level in the generated `Makefile` to `-O1`, clean (`make distclean && make clean`) and rebuild the project (`make`). If this solves the problem, one of the possible reasons is that code is missing the `volatile`  keyword for certain variables.
+  To permanently adjust the default compiler optimization level, modify `MXC_OPTIMIZE_CFLAGS` in  `assets/embedded-ai85/templateMakefile` for Arm code and  `assets/embedded-riscv-ai85/templateMakefile.RISCV` for RISC-V code.
+
+* `--stop-after N` where `N` is a layer number may help finding the problematic layer by terminating the network early without having to retrain and without having to change the weight input file. Note that this may also require `--max-checklines` as [described above](#Handling Linker Flash Section Overflows) since intermediate outputs tend to be large.
+
+* `--no-bias LIST` where `LIST` is a comma-separated list of layers (e.g., `0,1,2,3`) can rule out problems due to the bias. This option zeros out the bias for the given layers without having to remove bias values from the weight input file. 
+
+* `--ignore-streaming` ignores all `streaming` statements in the YAML file. Note that this typically only works when the sample input is replaced with a different, lower-dimension sample input (for example, use 3×32×32 instead of 3×128×128).
+
+  
 
 #### Energy Measurement
 
