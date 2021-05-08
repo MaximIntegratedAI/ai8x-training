@@ -1,0 +1,26 @@
+start_epoch: 200
+validation_freq: 250
+elastic_kernel:
+  leveling: False
+  num_epochs: 2000
+elastic_depth:
+  leveling: True
+  num_epochs: 1500
+elastic_width:
+  leveling: True
+  num_epochs: 2000
+kd_params:
+  teacher_model: 'full_model'  # 'prev_stage_model'
+  distill_loss: 0.5
+  student_loss: 1.0
+  temperature: 1
+evolution_search:
+  population_size: 100
+  prob_mutation: 0.2
+  ratio_mutation: 0.5
+  ratio_parent: 0.25
+  num_iter: 50
+  constraints:
+    min_num_weights: 300000
+    max_num_weights: 420000
+    width_options: [64, 128]

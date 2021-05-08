@@ -60,6 +60,7 @@ models, or with the provided sample models:
 - MobileNet for ImageNet: https://github.com/marvis/pytorch-mobilenet
 """
 
+import copy
 import fnmatch
 import logging
 import operator
@@ -107,11 +108,13 @@ from distiller.quantization.range_linear import PostTrainLinearQuantizer
 
 # pylint: enable=no-name-in-module
 import ai8x
+import ai8x_nas
 import datasets
 import nnplot
 import parse_qat_yaml
 import parsecmd
 import sample
+from nas import parse_nas_yaml
 
 # from range_linear_ai84 import PostTrainLinearQuantizerAI84
 
@@ -291,6 +294,10 @@ def main():
     qat_policy = parse_qat_yaml.parse(args.qat_policy) \
         if args.qat_policy.lower() != "none" else None
 
+    # Get policy for once for all training policy
+    nas_policy = parse_nas_yaml.parse(args.nas_policy) \
+        if args.nas and args.nas_policy.lower() != '' else None
+
     # We can optionally resume from a checkpoint
     optimizer = None
     if args.resumed_checkpoint_path:
@@ -431,6 +438,23 @@ def main():
                         'to %d', start_epoch, ending_epoch)
         raise ValueError('Epochs parameter is too low. Nothing to do.')
 
+    if args.nas:
+        assert isinstance(model, ai8x_nas.OnceForAllModel), 'Model should implement ' \
+                                        'OnceForAllModel interface for NAS training!'
+        if nas_policy:
+            args.nas_stage_transition_list = create_nas_training_stage_list(model, nas_policy)
+            args.nas_kd_params = nas_policy['kd_params'] if 'kd_params' in nas_policy else None
+            if args.nas_kd_resume_from == '':
+                args.nas_kd_policy = None
+            else:
+                if args.nas_kd_params['teacher_model'] == 'full_model':
+                    kd_end_epoch = args.epochs
+                else:
+                    kd_end_epoch = get_next_stage_start_epoch(start_epoch,
+                                                              args.nas_stage_transition_list,
+                                                              args.epochs)
+                create_nas_kd_policy(model, compression_scheduler, start_epoch, kd_end_epoch, args)
+
     vloss = 10**6
     for epoch in range(start_epoch, ending_epoch):
         if qat_policy is not None and epoch > 0 and epoch == qat_policy['start_epoch']:
@@ -466,38 +490,59 @@ def main():
                 msglogger.info(distiller.masks_sparsity_tbl_summary(model, compression_scheduler))
 
         # evaluate on validation set
-        with collectors_context(activations_collectors["valid"]) as collectors:
-            top1, top5, vloss = validate(val_loader, model, criterion, [pylogger], args, epoch,
-                                         tflogger)
-            distiller.log_activation_statistics(epoch, "valid", loggers=all_tbloggers,
-                                                collector=collectors["sparsity"])
-            save_collectors_data(collectors, msglogger.logdir)
+        run_validation = not args.nas or (args.nas and (epoch < nas_policy['start_epoch']))
+        run_nas_validation = args.nas and (epoch >= nas_policy['start_epoch']) and \
+            ((epoch+1) % nas_policy['validation_freq'] == 0)
 
-        if not args.regression:
-            stats = ('Performance/Validation/',
-                     OrderedDict([('Loss', vloss),
-                                  ('Top1', top1)]))
-            if args.num_classes > 5:
-                stats[1]['Top5'] = top5
-        else:
-            stats = ('Performance/Validation/',
-                     OrderedDict([('Loss', vloss),
-                                  ('MSE', top1)]))
-        distiller.log_training_progress(stats, None, epoch, steps_completed=0, total_steps=1,
-                                        log_freq=1, loggers=all_tbloggers)
+        if run_validation or run_nas_validation:
+            checkpoint_name = args.name
+
+            # run pre validation steps if NAS is running
+            if run_nas_validation:
+                update_bn_stats(train_loader, model, args)
+                stage, level = get_nas_training_stage(epoch, args.nas_stage_transition_list)
+                if args.name:
+                    checkpoint_name = f'{args.name}_nas_stg{stage}_lev{level}'
+                else:
+                    checkpoint_name = f'nas_stg{stage}_lev{level}'
+
+            with collectors_context(activations_collectors["valid"]) as collectors:
+                top1, top5, vloss = validate(val_loader, model, criterion, [pylogger], args, epoch,
+                                             tflogger)
+                distiller.log_activation_statistics(epoch, "valid", loggers=all_tbloggers,
+                                                    collector=collectors["sparsity"])
+                save_collectors_data(collectors, msglogger.logdir)
+
+            if not args.regression:
+                stats = ('Performance/Validation/', OrderedDict([('Loss', vloss), ('Top1', top1)]))
+                if args.num_classes > 5:
+                    stats[1]['Top5'] = top5
+            else:
+                stats = ('Performance/Validation/', OrderedDict([('Loss', vloss), ('MSE', top1)]))
+
+            distiller.log_training_progress(stats, None, epoch, steps_completed=0, total_steps=1,
+                                            log_freq=1, loggers=all_tbloggers)
+
+            # Update the list of top scores achieved so far
+            update_training_scores_history(perf_scores_history, model, top1, top5, epoch, args)
+
+            # Save the checkpoint
+            if run_validation:
+                is_best = epoch == perf_scores_history[0].epoch
+                checkpoint_extras = {'current_top1': top1,
+                                     'best_top1': perf_scores_history[0].top1,
+                                     'best_epoch': perf_scores_history[0].epoch}
+            else:
+                is_best = False
+                checkpoint_extras = {'current_top1': top1}
+
+            apputils.save_checkpoint(epoch, args.cnn, model, optimizer=optimizer,
+                                     scheduler=compression_scheduler, extras=checkpoint_extras,
+                                     is_best=is_best, name=checkpoint_name,
+                                     dir=msglogger.logdir)
 
         if compression_scheduler:
             compression_scheduler.on_epoch_end(epoch, optimizer)
-
-        # Update the list of top scores achieved so far, and save the checkpoint
-        update_training_scores_history(perf_scores_history, model, top1, top5, epoch, args)
-        is_best = epoch == perf_scores_history[0].epoch
-        checkpoint_extras = {'current_top1': top1,
-                             'best_top1': perf_scores_history[0].top1,
-                             'best_epoch': perf_scores_history[0].epoch}
-        apputils.save_checkpoint(epoch, args.cnn, model, optimizer=optimizer,
-                                 scheduler=compression_scheduler, extras=checkpoint_extras,
-                                 is_best=is_best, name=args.name, dir=msglogger.logdir)
 
     # Finally run results on the test set
     test(test_loader, model, criterion, [pylogger], activations_collectors, args=args)
@@ -567,6 +612,24 @@ def create_optimizer(model, args):
     return optimizer
 
 
+def create_nas_kd_policy(model, compression_scheduler, epoch, next_state_start_epoch, args):
+    """Create knowledge distillation policy for nas"""
+    teacher = copy.deepcopy(model)
+    dlw = distiller.DistillationLossWeights(args.nas_kd_params['distill_loss'],
+                                            args.nas_kd_params['student_loss'], 0)
+    args.nas_kd_policy = distiller.KnowledgeDistillationPolicy(model, teacher,
+                                                               args.nas_kd_params['temperature'],
+                                                               dlw)
+    compression_scheduler.add_policy(args.nas_kd_policy, starting_epoch=epoch,
+                                     ending_epoch=next_state_start_epoch, frequency=1)
+
+    msglogger.info('\nStudent-Teacher knowledge distillation enabled for NAS:')
+    msglogger.info('\tStart Epoch: %d, End Epoch: %d', epoch, next_state_start_epoch)
+    msglogger.info('\tTemperature: %s', args.nas_kd_params['temperature'])
+    msglogger.info('\tLoss Weights (distillation | student | teacher): %s',
+                   ' | '.join(['{:.2f}'.format(val) for val in dlw]))
+
+
 def train(train_loader, model, criterion, optimizer, epoch,
           compression_scheduler, loggers, args):
     """Training loop for one epoch."""
@@ -595,6 +658,27 @@ def train(train_loader, model, criterion, optimizer, epoch,
     steps_per_epoch = (total_samples + batch_size - 1) // batch_size
     msglogger.info('Training epoch: %d samples (%d per mini-batch)', total_samples, batch_size)
 
+    if args.nas:
+        if args.nas_stage_transition_list is not None:
+            stage, level = get_nas_training_stage(epoch, args.nas_stage_transition_list)
+            prev_stage, _ = get_nas_training_stage(epoch-1, args.nas_stage_transition_list)
+        else:
+            stage = prev_stage = 0
+            level = 0
+
+        if prev_stage != stage:
+            if args.nas_kd_params:
+                if ('teacher_model' not in args.nas_kd_params) or \
+                    ('teacher_model' in args.nas_kd_params and
+                     args.nas_kd_params['teacher_model'] == 'full_model' and prev_stage == 0):
+                    create_nas_kd_policy(model, compression_scheduler, epoch, args.epochs, args)
+                elif 'teacher_model' in args.nas_kd_params and \
+                     args.nas_kd_params['teacher_model'] == 'prev_stage_model':
+                    next_stage_start_epoch = get_next_stage_start_epoch(
+                        epoch, args.nas_stage_transition_list, args.epochs)
+                    create_nas_kd_policy(model, compression_scheduler, epoch,
+                                         next_stage_start_epoch, args)
+
     # Switch to train mode
     model.train()
     acc_stats = []
@@ -604,12 +688,24 @@ def train(train_loader, model, criterion, optimizer, epoch,
         data_time.add(time.time() - end)
         inputs, target = inputs.to(args.device), target.to(args.device)
 
+        # Set nas parameters if necessary
+        if args.nas:
+            if stage == 1:
+                ai8x_nas.sample_subnet_kernel(model, level)
+            elif stage == 2:
+                ai8x_nas.sample_subnet_depth(model, level)
+            elif stage == 3:
+                ai8x_nas.sample_subnet_width(model, level)
+
         # Execute the forward phase, compute the output and measure loss
         if compression_scheduler:
             compression_scheduler.on_minibatch_begin(epoch, train_step, steps_per_epoch, optimizer)
 
         if not hasattr(args, 'kd_policy') or args.kd_policy is None:
-            output = model(inputs)
+            if not hasattr(args, 'nas_kd_policy') or args.nas_kd_policy is None:
+                output = model(inputs)
+            else:
+                output = args.nas_kd_policy.forward(inputs)
         else:
             output = args.kd_policy.forward(inputs)
 
@@ -654,6 +750,15 @@ def train(train_loader, model, criterion, optimizer, epoch,
         if compression_scheduler:
             compression_scheduler.on_minibatch_end(epoch, train_step, steps_per_epoch, optimizer)
 
+        # Reset elastic sampling wrt NAS stage if necessary
+        if args.nas:
+            if stage == 1:
+                ai8x_nas.reset_kernel_sampling(model)
+            elif stage == 2:
+                ai8x_nas.reset_depth_sampling(model)
+            elif stage == 3:
+                ai8x_nas.reset_width_sampling(model)
+
         # measure elapsed time
         batch_time.add(time.time() - end)
         steps_completed = (train_step+1)
@@ -682,6 +787,10 @@ def train(train_loader, model, criterion, optimizer, epoch,
             for loss_name, meter in losses.items():
                 stats_dict[loss_name] = meter.mean
             stats_dict.update(errs)
+            if args.nas:
+                stats_dict['NAS-Stage'] = stage
+                if stage != 0:
+                    stats_dict['NAS-Level'] = level
             stats_dict['LR'] = optimizer.param_groups[0]['lr']
             stats_dict['Time'] = batch_time.mean
             stats = ('Performance/Training/', stats_dict)
@@ -694,6 +803,14 @@ def train(train_loader, model, criterion, optimizer, epoch,
                                             loggers)
         end = time.time()
     return acc_stats
+
+
+def update_bn_stats(train_loader, model, args):
+    """Routine to update BatchNorm statistics"""
+    model.train()
+    for (inputs, target) in train_loader:
+        inputs, target = inputs.to(args.device), target.to(args.device)
+        _ = model(inputs)
 
 
 def validate(val_loader, model, criterion, loggers, args, epoch=-1, tflogger=None):
@@ -790,14 +907,14 @@ def _validate(data_loader, model, criterion, loggers, args, epoch=-1, tflogger=N
                     f.write(f'{args.labels[i.int()]}\n')
 
     if args.csv_prefix is not None:
-        f_ytrue = open(f'{args.csv_prefix}_ytrue.csv', 'w')
-        f_ytrue.write('truth\n')
-        f_ypred = open(f'{args.csv_prefix}_ypred.csv', 'w')
-        f_ypred.write(','.join(args.labels) + '\n')
-        f_x = open(f'{args.csv_prefix}_x.csv', 'w')
-        for i in range(args.dimensions[0]-1):
-            f_x.write(f'x_{i}_mean,')
-        f_x.write(f'x_{args.dimensions[0]-1}_mean\n')
+        with open(f'{args.csv_prefix}_ytrue.csv', 'w') as f_ytrue:
+            f_ytrue.write('truth\n')
+        with open(f'{args.csv_prefix}_ypred.csv', 'w') as f_ypred:
+            f_ypred.write(','.join(args.labels) + '\n')
+        with open(f'{args.csv_prefix}_x.csv', 'w') as f_x:
+            for i in range(args.dimensions[0]-1):
+                f_x.write(f'x_{i}_mean,')
+            f_x.write(f'x_{args.dimensions[0]-1}_mean\n')
 
     if args.earlyexit_thresholds:
         # for Early Exit, we have a list of errors and losses for each of the exits.
@@ -1248,6 +1365,69 @@ def greedy(model, criterion, _optimizer, loggers, args):
                                                           args.greedy_target_density,
                                                           args.greedy_pruning_step,
                                                           test_fn, train_fn)
+
+
+def create_nas_training_stage_list(model, nas_policy):
+    """Create list to define NAS stage transition epochs"""
+    stage_transition_list = []
+    msglogger.info('NAS Policy: %s', nas_policy)
+
+    stage_transition_list.append((nas_policy['start_epoch'], 0, 0))
+
+    max_kernel_level = model.get_max_elastic_kernel_level()
+    if nas_policy['elastic_kernel']['leveling']:
+        for level in range(max_kernel_level):
+            stage_transition_list.append((stage_transition_list[-1][0] +
+                                          nas_policy['elastic_kernel']['num_epochs'], 1, level+1))
+    else:
+        stage_transition_list.append((stage_transition_list[-1][0] +
+                                      nas_policy['elastic_kernel']['num_epochs'], 1,
+                                      max_kernel_level))
+
+    max_depth_level = model.get_max_elastic_depth_level()
+    if nas_policy['elastic_depth']['leveling']:
+        for level in range(max_depth_level):
+            stage_transition_list.append((stage_transition_list[-1][0] +
+                                          nas_policy['elastic_depth']['num_epochs'], 2, level+1))
+    else:
+        stage_transition_list.append((stage_transition_list[-1][0] +
+                                      nas_policy['elastic_depth']['num_epochs'], 2,
+                                      max_depth_level))
+
+    max_width_level = model.get_max_elastic_width_level()
+    if nas_policy['elastic_width']['leveling']:
+        for level in range(max_width_level):
+            stage_transition_list.append((stage_transition_list[-1][0] +
+                                          nas_policy['elastic_width']['num_epochs'], 3, level+1))
+    else:
+        stage_transition_list.append((stage_transition_list[-1][0] +
+                                      nas_policy['elastic_width']['num_epochs'], 3,
+                                      max_width_level))
+
+    return stage_transition_list
+
+
+def get_nas_training_stage(epoch, stage_transition_list):
+    """Returns current stage of NAS"""
+    for t in stage_transition_list:
+        if epoch < t[0]:
+            break
+
+    return t[1], t[2]  # pylint: disable=undefined-loop-variable
+
+
+def get_next_stage_start_epoch(epoch, stage_transition_list, num_epochs):
+    """Returns the starting epoch of the following stage"""
+    current_stage = None
+    for stg_idx, t in enumerate(stage_transition_list):
+        if epoch < t[0]:
+            if current_stage is None:
+                current_stage = t[1]
+            if stg_idx == len(stage_transition_list)-1:
+                return num_epochs
+            if current_stage != stage_transition_list[stg_idx+1][1]:
+                return t[0]
+    return num_epochs
 
 
 class missingdict(dict):

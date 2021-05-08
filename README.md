@@ -893,6 +893,8 @@ The following table describes the most important command line arguments for `tra
 | `--deterministic`          | Seed random number generators with fixed values              |                                 |
 | `--resume-from`            | Resume from previous checkpoint                              | `--resume-from chk.pth.tar`     |
 | `--qat-policy`             | Define QAT policy in YAML file (default: qat_policy.yaml). Use ‘’None” to disable QAT. | `--qat-policy qat_policy.yaml`  |
+| `--nas`                    | Enable network architecture search                           |
+| `--nas-policy`             | Define NAS policy in YAML file                               | `--nas-policy nas/nas_policy.yaml`  |
 | *Display and statistics*   |                                                              |                                 |
 | `--enable-tensorboard` | Enable logging to TensorBoard (default: disabled) | |
 | `--confusion`              | Display the confusion matrix                                 |                                 |
@@ -1232,7 +1234,92 @@ The [Netron tool](https://github.com/lutzroeder/Netron) can visualize networks, 
 (ai8x-training) $ ./train.py --model ai85net5 --dataset MNIST --evaluate --exp-load-weights-from checkpoint.pth.tar --device MAX78000 --summary onnx
 ```
 
+### Neural Architecture Search (NAS)
 
+#### Introduction
+
+This part describes MAX78000 neural architecture search (NAS) solution implemented in  [ai8x-training](https://github.com/MaximIntegratedAI/ai8x-training) repository. It explains the utilized NAS method and how to run existing NAS models in the repository or define a new one.
+
+NAS aims to find the best neural architecture for a given set of requirements by automating the architecture engineering. NAS explores the search space automatically and comes up with an architecture that is hard to be optimized with human design. Many different techniques are proposed in the literature for automated architecture search, including reinforcement based and evolutionary based solutions.
+
+#### Once-for-all 
+Once-for-all (OFA) is a weight sharing based NAS technique, originally proposed in [here](https://arxiv.org/abs/1908.09791). The paper introduces a method to deploy a trained model to diverse hardware directly without the need of retraining. This is achieved by training a supernet, which is called once-for-all network, then deploying only part of it depending on the hardware constraints. This requires a training process where all sub-networks are trained enough to be deployed directly. Since training all sub-networks can be computationally prohibitive, sub-networks are sampled in each gradient update step. However, sampling only few networks may cause performance degradation as the sub-networks are interfering with each other. To solve this issue, _progressive shrinking_ algorithm is proposed by the authors. Rather than optimizing the supernet directly with all interfering sub-networks, it is proposed to train supernet that is the largest network with maximum kernel size, depth and width first. Then, smaller sub-networks that share parameters with the supernet are trained progressively. Thus, smaller networks can be initialized with the most important parameters. If the search space consists of different kernel sizes, depths and widths, they are added to sampling space sequentially to minimize the risk of parameter interference. To illustrate, after full model training the elastic kernel stage is performed where the kernel size is chosen from {1x1, 3x3} while the depth and width are still kept at their maximum values. Next, kernel sizes and depths are sampled in the elastic depth stage. Finally, all sub-networks are sampled from the whole search space in elastic width stage.
+
+After the  supernet is trained through sub-networks, the architecture search stage takes place. As a search algorithm, evolutionary search is proposed in the paper. In this stage, the best architecture is searched given the hardware constraints. In the algorithm, a set of candidate architectures that are performing best on validation set are mutated and having crossovers iteratively. 
+
+After training and search steps, the model is ready to deploy to the target hardware in the OFA method as the parameters are already trained. However, the model needs to be quantized for the deployment in the MAX78000, therefore our implementation has another step where the found model needs to be trained using quantization aware training (QAT) module of MAX78000 training repository. 
+
+To sum up, the sequential steps of once-for-all supernet training can be listed as follows:
+
+1- Full model training (Stage 0): In this step, the supernet with the maximum kernel size, depth and width is trained. This network is suggested to be **at least 3x or 5x** bigger than MAX78000 limits as sub-networks of it are the targets for MAX78000 deployment.
+
+2- Elastic Kernel (Stage 1): In this step, only sub-networks with different kernel sizes are sampled from the supernet. For the MAX78000 Conv2d layers, the supported sizes are {3x3, 1x1}, where {5, 3, 1} for the Conv1d layers. Since the sampled sub-network is a part of the supernet, supernet is updated with the gradient updates.
+
+3- Elastic Depth (Stage 2): In this step, sub-networks with different kernel sizes and depths are sampled from the supernet. In the MAX78000 implementation of OFA, the network is divided into parts called units. Each unit can consist different number of layers and contain an extra pooling layer at their beginning. Depth sampling is performed in the units. If a subnetwork with  _N_ layers in a specific unit is sampled, the first _D_ layers of the unit in the supernet is kept by removing the last _(N-D)_ layers. Consequently, the first layers of each unit are shared among more sub-networks.
+
+4- Elastic Width (Stage 3): In addition to kernel size and depth, sub-networks are sampled from different width options in this stage. For width shrinking, the most important channels with the largest L1 norm are selected. This ensures the fact that only the most important channels are shared. To do this, the output channels of the layers are sorted after each gradient update phase. Surely, the input channels of the following layers are sorted with the same indices to keep the supernet functional.
+
+5- Evolutionary Search: For the most of search space selections, the number of sub-networks is high enough to make evaluation of each sub-network impossible. In the evolutionary search, better architectures are found at each iteration by mutations and crossovers. The required time for this stage depends on the candidate pool size and iteration number; however, it is generally much shorter than the time spent on training stages.
+
+In addition to above steps, QAT is performed with the chosen architecture by NAS as it is aforementioned.
+
+For more details and to have a better understanding of OFA method, please see the [original paper](https://arxiv.org/abs/1908.09791).
+
+##### Stages and Levels in the MAX78000 implementation
+In the NAS module of ai8x-training module, there are 2 concepts that indicate the part of whole NAS training process. These are stages and levels. Stage denotes whether full model training (stage 0), elastic kernel (stage 1), elastic depth (stage 2) or elastic width (stage 3) is being performed. Whole training is completed after stage 3 is finished. 
+
+Levels denote the phases of stages. In the original [OFA paper](https://arxiv.org/abs/1908.09791), the authors suggest progressive shrinking to facilitate training of interfering sub-networks. Stages play an important role here. In each stage, a new search parameter is introduced to the training. To further facilitate training, stages can be decomposed into levels. With increasing levels, smaller sub-networks become sampleable since network is trained well enough to be ready for an increased number of sub-networks. To illustrate, if the deepest unit in the network consists 4 layers there are 3 levels in the stage 2. This is because in the level 1 of stage 2 (elastic depth), the last layer is removed with 50% probability in the sub-network sampling. Therefore possible depths are 3 or 4 for that unit in the level 1. In the level 2,  the possible depths for this unit becomes  [2, 3, 4]. Likewise, the possible depths become [1, 2, 3, 4] in the level 3. The first layer in a unit is always there, it is never removed in any sub-network. The same level logic applies to stage 1 and stage 3 as well. In the stage 1, kernel sizes are sampled. In 2D convolutions, the possible kernel options are either 1x1 or 3x3, so there is only 1 level. However in 1D convolutions, kernel size could either be 5, 3, or 1; so, there are 2 levels. In the stage 3, widths are sampled. The possible widths are 100% of the same layer's width in the supernet,  75%, 50% or 25% of it. Since there are 4 options, there are 4-1=3 levels in the stage 3.  As levels increase slimmer width becomes an option in the sampling pool. 
+
+To summarize, the architecture of the supernet determines how many levels will be in the training. The deepest unit determines the number of levels in the stage 2. Assume that there are 3 levels in the stage 2, then the training continues from level 1 of stage 3 just after the level 3 of stage 2 is completed. The checkpoint files for each level are saved in case user wants to resume the training from a certain level afterwards.
+
+#### Usage
+Network Architecture Search (NAS) can be enabled by calling `--nas` option. It is based on Once For All (OFA) approach which is described in details above. NAS is controlled by a policy file and can specified by `--nas-policy` which is composed of the following fields:
+  * Until epoch `start_epoch`, the full model is trained without any elastic search
+  * `validation_freq` is set to define the frequency in epochs to calculate the model performance on the validation set after full model training. This parameter is used to save training time especially the model includes batchnorm.
+  * `elastic_kernel`, `elastic_depth` and `elastic_width` fields are used to define the properties of each elastic search stage. These fields includes  the following two sub fields:
+	  * Set `leveling` to enable leveling during the elastic search. See [here](# (Stages and Levels in the MAX78000 implementation)) for stage and levels in the elastic search.
+    * `num_epochs` defines the number of epochs for the search stage if `leveling` is False. It defines the number of epochs for each level in the stage.
+  * `kd_params` is set to enable Knowledge Distillation.
+    * `teacher_model` defines the model used as teacher model. Teacher is the model before epoch `start_epoch` if it is set to `full_model`. Teacher is updated with the model just before the  stage transition if this field is set to `prev_stage_model`.
+    * See [here](https://intellabs.github.io/distiller/knowledge_distillation.html#knowledge-distillation)  to set `distill_loss`, `student_loss` and  `temperature`, properly.
+  * `evolution_search` field defines the search algorithm parameters, used to find the sub network of the full network.
+    * `population_size` is the number of sub networks to be considered at each iteration
+    * `ratio_parent` is the ratio of the population to be kept for the next iteration
+    * `ratio_mutation` determines the number of the mutations at each iteration, which is calculated by multiplying this ratio with the popultion size
+    * `prob_mutation` is the ratio of the parameter change of a mutated network
+    * `num_iter` is the number of iterations
+    * `constraints` are used define the constraints of the samples in the population.
+      * `min_num_weights` and `max_num_weights` are used to define the minimum and the maximum number of weights in the network.
+      * `width_options` is used to limit the possible number of channels in any of the layer in the selected network. This constraint can be used to effectively use width memory of MAX78000.
+
+Note that, it is also possible to resume NAS training from a saved checkpoint using the `--resume-from` option. Teacher model can also be loaded using `--nas-kd-resume-from` option.
+
+##### Import points to consider:
+* Since the sub-networks are intended to be used in MAX78000, make sure that the full model size of OFA is **at least 3 times** bigger than MAX78000 kernel memory size. Likewise, it is good to design it deeper and wider than a network you think suitable for the given task. If the initial model size is much bigger, this will slow down the training process and there will be a risk that most of the sub-networks exceed the MAX78000 size. Therefore, 3x to 5x is recommended as size multiplier for the full model selection.
+* For the width selection, please make sure that widths are multiples of 64 as MAX78000 has 64 processors and each channel is processed in a separate processor. By such a selection, kernel memory is used more efficiently as widths are searched within [100%, 75%, 50%, 25%] of the initial supernet width selection. Note that this is the default percentages and they can be changed. Rather than abrupt decreases, more granularity and linear decrease in percentages are recommended as this way is more suitable to the progressive shrinking.
+* The training takes time. It will take days or weeks depending on the number of sub-networks, the full model size and number of epochs at each stage/level. It is recommended that you watch the loss curves in the training and you stop the training if the loss is fully converged. Then, you can proceed with the next level using the checkpoint saved from the last level.
+* The number of batches in each epoch plays an important role in the selection of number of epochs for the each stage/level. If your dataset is 10x bigger and you have 10x more gradient updates, you can divide the number of epochs by 10 for the same supernet architecture.
+
+#### NAS Model Definition
+The only model architecture implemented in this repository is the sequential model. It is composed of sequential units, which has sequential FusedConvNdBNReLUs with and optional MaxPool layer at the end, and a Linear layer at last (see Figure below).
+
+<img src="docs/NAS_Sequential_Model.png" alt="nas_model" style="zoom:50%;"/>
+
+All the required elastic search strategies are implemented in this (model file)[models/ai85nasnet-sequential.py].
+
+A new model architecture can be implemented and make it run in the current training routine by implementing `OnceForAllModel` interface. To do this, the new model class must have 
+  * sample_subnet_width
+  * reset_width_sampling
+  * get_max_elastic_width_level
+  * sample_subnet_depth
+  * reset_depth_sampling
+  * get_max_elastic_depth_level
+  * sample_subnet_kernel
+  * reset_kernel_sampling
+  * get_max_elastic_kernel_level
+
+#### NAS Output
+The current version of the NAS runs only to train floating point models and logs out the best model architectures with highest accuracy. Therefore, additional effort needed by the user to create a model file in this new architecture either to copy the required parameters to post quantize or initiate quantization aware training.
 
 ---
 
